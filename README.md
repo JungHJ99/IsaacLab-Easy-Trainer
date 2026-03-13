@@ -131,7 +131,7 @@ We gratefully acknowledge the authors of Orbit for their foundational contributi
 
 ## 설치 및 빌드 과정
 ```
-docker pull nvcr.io/nvidia/isaac-sim:4.50
+docker pull nvcr.io/nvidia/isaac-sim:4.5.0
 ```
 ```
 docker login nvcr.io
@@ -152,6 +152,7 @@ bash docker_start.sh
 ```
 ```
 docker exec -it isaac_lab_dev bash
+ln -s /isaac-sim /workspace/isaaclab/_isaac_sim
 ./isaaclab.sh --install
 ```
 ```
@@ -159,21 +160,11 @@ xhost +local:docker
 ```
 ```
 ./isaaclab.sh -s -- \
-  --/renderer/activeGpu=0 \
   --/renderer/resolution/width=640 \
   --/renderer/resolution/height=480 \
-  --/rtx/rendermode="RaytracedLighting" \
-  --/rtx/post/aa/op="None" \
-  --/rtx/directLighting/maxDirectLightSamples=1 \
-  --/rtx/reflections/enabled=false \
-  --/rtx/shadows/enabled=false \
-  --/rtx/ambientOcclusion/enabled=false \
-  --/mgpu/enabled=false
-  --/app/window/drawMouse=false \
-  --/app/renderer/waitIdle=false \
-  --/rtx/hydra/enabled=false \
-  --/physics/updateToUsd=false \
-  --/physics/updateInstancedMeshVisuals=false \
-  --/rtx-defaults/post/aa/op="None" \
-  --/rtx/sceneDb/ambientLightIntensity=0.1
+  --/rtx/rendermode="RasterizedLighting" \
+```
+```
+compressed 이미지 퍼블리시:
+ros2 run image_transport republish raw compressed --ros-args --remap in:=/rgb --remap out/compressed:=/rgb/compressed
 ```

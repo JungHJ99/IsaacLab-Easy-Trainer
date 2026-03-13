@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
     # Install both FastRTPS and CycloneDDS
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-rmw-fastrtps-cpp \
+    ros-humble-image-transport \
+    ros-humble-image-transport-plugins \
     # This includes various dev tools including colcon
     ros-dev-tools && \
     # Install rosdeps for extensions that declare a ros_ws in
