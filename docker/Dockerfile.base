@@ -36,6 +36,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 USER root
 
+RUN sed -i 's/archive.ubuntu.com/mirror.kakao.com/g' /etc/apt/sources.list && \
+    sed -i 's/security.ubuntu.com/mirror.kakao.com/g' /etc/apt/sources.list
+
 # Install dependencies and remove cache
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \

@@ -159,12 +159,23 @@ ln -s /isaac-sim /workspace/isaaclab/_isaac_sim
 xhost +local:docker
 ```
 ```
+sudo swapoff -a
+sudo fallocate -l 30G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+```
+```
 ./isaaclab.sh -s -- \
   --/renderer/resolution/width=640 \
   --/renderer/resolution/height=480 \
-  --/rtx/rendermode="RasterizedLighting" \
+  --/rtx/rendermode="RasterizedLighting" 
 ```
 ```
 compressed 이미지 퍼블리시:
 ros2 run image_transport republish raw compressed --ros-args --remap in:=/rgb --remap out/compressed:=/rgb/compressed
+```
+```
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libspdlog.so.1.9.2
+ros2 topic list
 ```

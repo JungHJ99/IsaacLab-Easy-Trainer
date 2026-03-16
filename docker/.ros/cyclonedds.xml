@@ -6,6 +6,7 @@
         <NetworkInterface autodetermine="true"/>
       </Interfaces>
       <AllowMulticast>true</AllowMulticast>
+      <VerbosityLevel>warning</VerbosityLevel>
     </General>
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>

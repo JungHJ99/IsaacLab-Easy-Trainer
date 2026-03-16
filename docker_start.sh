@@ -13,5 +13,9 @@ docker run -it --rm \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v $HOME/.Xauthority:/tmp/.Xauthority:ro \
     -v $(pwd):/workspace/isaaclab \
+    -v ~/docker/isaac-sim/cache/kit:/isaac-sim/kit/cache/Kit:rw \
+    -v ~/docker/isaac-sim/cache/ov:/root/.cache/ov:rw \
+    -v ~/docker/isaac-sim/cache/pip:/root/.cache/pip:rw \
+    -v ~/docker/isaac-sim/cache/glcache:/root/.cache/nvidia/GLCache:rw
     --name isaac_lab_dev \
     isaac-lab-ros2:latest
