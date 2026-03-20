@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout:*)",
+      "WebFetch(domain:docs.isaacsim.omniverse.nvidia.com)",
+      "Bash(find /home/hjhj/IsaacLab -type f -name *ros*)",
+      "Bash(grep -r \"ros_ws\\\\|ros_package\\\\|ROS\" /home/hjhj/IsaacLab/source --include=*.toml)",
+      "Bash(grep -l \"publish\\\\|ROS\" /home/hjhj/IsaacLab/scripts/**/*.py)",
+      "Bash(find /home/hjhj/IsaacLab -type f -name *.py -exec grep -l \"sensor.*camera\\\\|camera.*sensor\" {})",
+      "Bash(2)",
+      "Bash(find /home/hjhj/IsaacLab -type f -name *.py -path *example*)",
+      "Bash(grep -r \"publisher\\\\|publish\\\\|topic\" /home/hjhj/IsaacLab/scripts --include=*.py)"
+    ]
+  }
+}
