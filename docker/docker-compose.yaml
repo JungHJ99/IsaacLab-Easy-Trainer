@@ -69,6 +69,19 @@ x-default-isaac-lab-environment: &default-isaac-lab-environment
   - ISAACSIM_PATH=${DOCKER_ISAACLAB_PATH}/_isaac_sim
   - OMNI_KIT_ALLOW_ROOT=1
 
+x-x11-environment: &x11-environment
+  - DISPLAY=${DISPLAY}
+  - XAUTHORITY=/tmp/.Xauthority
+
+x-x11-volumes: &x11-volumes
+  - type: bind
+    source: /tmp/.X11-unix
+    target: /tmp/.X11-unix
+  - type: bind
+    source: ${HOME}/.Xauthority
+    target: /tmp/.Xauthority
+    read_only: true
+
 x-default-isaac-lab-deploy: &default-isaac-lab-deploy
   resources:
     reservations:
@@ -122,8 +135,27 @@ services:
         - DOCKER_NAME_SUFFIX=${DOCKER_NAME_SUFFIX-}
     image: isaac-lab-ros2${DOCKER_NAME_SUFFIX-}
     container_name: isaac-lab-ros2${DOCKER_NAME_SUFFIX-}
-    environment: *default-isaac-lab-environment
-    volumes: *default-isaac-lab-volumes
+    environment:
+      - ISAACSIM_PATH=${DOCKER_ISAACLAB_PATH}/_isaac_sim
+      - OMNI_KIT_ALLOW_ROOT=1
+      - DISPLAY=${DISPLAY}
+      - XAUTHORITY=/tmp/.Xauthority
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}
+      - LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/humble/lib
+      - FASTRTPS_DEFAULT_PROFILES_FILE=${DOCKER_USER_HOME}/.ros/fastdds.xml
+      - CYCLONEDDS_URI=${DOCKER_USER_HOME}/.ros/cyclonedds.xml
+    volumes:
+      # Default Isaac Lab volumes
+      - *default-isaac-lab-volumes
+      # X11 forwarding
+      - type: bind
+        source: /tmp/.X11-unix
+        target: /tmp/.X11-unix
+      - type: bind
+        source: ${HOME}/.Xauthority
+        target: /tmp/.Xauthority
+        read_only: true
+    shm_size: '16gb'
     network_mode: host
     deploy: *default-isaac-lab-deploy
     # This is the entrypoint for the container

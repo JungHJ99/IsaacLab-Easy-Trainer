@@ -173,9 +173,22 @@ sudo swapon /swapfile
 ```
 ```
 compressed 이미지 퍼블리시:
-ros2 run image_transport republish raw compressed --ros-args --remap in:=/rgb --remap out/compressed:=/rgb/compressed
+apt-get update && apt-get install -y ros-${ROS_DISTRO}-image-transport-plugins
+ros2 run image_transport republish raw compressed \
+--ros-args \
+--remap in:=/simulation/camera_rgb \
+--remap out:=/output/camera_compressed
 ```
 ```
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libspdlog.so.1.9.2
 ros2 topic list
+```
+```
+docker pull moveit/moveit2:main-humble-tutorial-source
+```
+```
+docker build --no-cache -t moveit2-isaac:latest .
+```
+```
+ros2 service call /pick_and_place std_srvs/srv/Trigger
 ```

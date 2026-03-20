@@ -9,6 +9,8 @@ FROM isaac-lab-base${DOCKER_NAME_SUFFIX} AS ros2
 # Which ROS2 apt package to install
 ARG ROS2_APT_PACKAGE
 
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
 RUN sed -i 's/archive.ubuntu.com/mirror.kakao.com/g' /etc/apt/sources.list && \
     sed -i 's/security.ubuntu.com/mirror.kakao.com/g' /etc/apt/sources.list
 

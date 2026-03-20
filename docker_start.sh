@@ -10,12 +10,13 @@ docker run -it --rm \
     -e "LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/humble/lib" \
     -e DISPLAY=$DISPLAY \
     -e XAUTHORITY=/tmp/.Xauthority \
+    -e LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libspdlog.so.1.9.2 \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v $HOME/.Xauthority:/tmp/.Xauthority:ro \
     -v $(pwd):/workspace/isaaclab \
     -v ~/docker/isaac-sim/cache/kit:/isaac-sim/kit/cache/Kit:rw \
     -v ~/docker/isaac-sim/cache/ov:/root/.cache/ov:rw \
     -v ~/docker/isaac-sim/cache/pip:/root/.cache/pip:rw \
-    -v ~/docker/isaac-sim/cache/glcache:/root/.cache/nvidia/GLCache:rw
+    -v ~/docker/isaac-sim/cache/glcache:/root/.cache/nvidia/GLCache:rw \
     --name isaac_lab_dev \
     isaac-lab-ros2:latest

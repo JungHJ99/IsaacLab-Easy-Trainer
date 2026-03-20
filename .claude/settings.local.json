@@ -9,7 +9,10 @@
       "Bash(find /home/hjhj/IsaacLab -type f -name *.py -exec grep -l \"sensor.*camera\\\\|camera.*sensor\" {})",
       "Bash(2)",
       "Bash(find /home/hjhj/IsaacLab -type f -name *.py -path *example*)",
-      "Bash(grep -r \"publisher\\\\|publish\\\\|topic\" /home/hjhj/IsaacLab/scripts --include=*.py)"
+      "Bash(grep -r \"publisher\\\\|publish\\\\|topic\" /home/hjhj/IsaacLab/scripts --include=*.py)",
+      "Bash(mv franka_isaac_control isaac_robot_control)",
+      "Bash(mv resource/franka_isaac_control resource/isaac_robot_control)",
+      "Bash(find /home/hjhj/IsaacLab/moveit/ws/src -name *.action -o -name *.msg -o -name *.srv)"
     ]
   }
 }
