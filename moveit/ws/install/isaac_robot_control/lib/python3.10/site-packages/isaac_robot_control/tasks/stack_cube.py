@@ -1,7 +1,8 @@
-"""Pick-and-Place Task 구현.
+"""Stack-Cube Task 구현.
 
-오브젝트를 잡아서 목표 위치에 놓는 작업.
-pick_object, place_target을 인자로 받아 범용적으로 사용 가능.
+오브젝트를 잡아서 다른 오브젝트 위에 쌓는 작업.
+pick 후 EE-오브젝트 상대 오프셋을 계산하여,
+그립 위치에 관계없이 정확히 target 위에 놓이도록 보정한다.
 """
 
 from __future__ import annotations
@@ -21,16 +22,16 @@ if TYPE_CHECKING:
 APPROACH_OFFSET = 0.15
 GRASP_OFFSET = 0.01
 LIFT_OFFSET = 0.10
-PLACE_OFFSET = 0.08
 
 
-class PickAndPlaceTask(BaseTask):
-    """Pick-and-Place Task.
+class StackCubeTask(BaseTask):
+    """Stack-Cube Task.
 
     Args:
         controller: 로봇 컨트롤러.
         pick_object: 잡을 오브젝트 이름 (Marker ns).
-        place_target: 놓을 목표 오브젝트 이름 (Marker ns).
+        place_target: 쌓을 대상 오브젝트 이름 (Marker ns).
+        stack_offset: target 오브젝트 z 위에 추가할 높이 (기본 0.03m).
     """
 
     def __init__(
@@ -38,10 +39,12 @@ class PickAndPlaceTask(BaseTask):
         controller: RobotController,
         pick_object: str,
         place_target: str,
+        stack_offset: float = 0.03,
     ):
         super().__init__(controller)
         self._pick_object = pick_object
         self._place_target = place_target
+        self._stack_offset = stack_offset
 
     @property
     def pick_object(self) -> str:
@@ -63,7 +66,7 @@ class PickAndPlaceTask(BaseTask):
         return True
 
     def execute(self) -> bool:
-        """Pick-and-Place 전체 시퀀스 실행."""
+        """Stack-Cube 전체 시퀀스 실행."""
         if not self.validate():
             return False
 
@@ -76,7 +79,7 @@ class PickAndPlaceTask(BaseTask):
         px, py, pz = place_pos
 
         self.logger.info("=" * 50)
-        self.logger.info("  Pick-and-Place 시작")
+        self.logger.info("  Stack Cube 시작")
         self.logger.info(f"  {self._pick_object}:    ({cx:.3f}, {cy:.3f}, {cz:.3f})")
         self.logger.info(f"  {self._place_target}: ({px:.3f}, {py:.3f}, {pz:.3f})")
         self.logger.info("=" * 50)
@@ -94,12 +97,13 @@ class PickAndPlaceTask(BaseTask):
             self.logger.error("Pick 실패!")
             return False
 
-        # Place: approach → descend → open_gripper → retreat
-        self.logger.info(f"\n[Place] {self._place_target}")
-        if not skills.place(px, py, pz,
-                            approach_offset=APPROACH_OFFSET,
-                            place_offset=PLACE_OFFSET,
-                            lift_offset=LIFT_OFFSET):
+        # Place on object (상대좌표 보정)
+        self.logger.info(f"\n[Place on] {self._place_target}")
+        if not skills.place_on_object(
+            self._pick_object,
+            self._place_target,
+            stack_offset=self._stack_offset,
+        ):
             self.logger.error("Place 실패!")
             return False
 
@@ -108,14 +112,14 @@ class PickAndPlaceTask(BaseTask):
         skills.go_to_joints(initial_joints)
 
         self.logger.info("\n" + "=" * 50)
-        self.logger.info("  Pick-and-Place 모션 완료!")
+        self.logger.info("  Stack Cube 모션 완료!")
         self.logger.info("=" * 50)
         return True
 
     def evaluate(self) -> bool:
-        """pick_object가 place_target 위에 있는지 판정.
+        """pick_object가 place_target 위에 쌓여 있는지 판정.
 
-        XY 거리가 place_target 크기 이내이고,
+        XY 거리가 5cm 이내이고,
         pick_object Z가 place_target Z보다 위에 있으면 성공.
         """
         ctrl = self._controller
@@ -143,7 +147,6 @@ class PickAndPlaceTask(BaseTask):
                          f"({place_pos[0]:.3f}, {place_pos[1]:.3f}, {place_pos[2]:.3f})")
         self.logger.info(f"[판정] XY 거리: {xy_dist:.3f}m, Z 차이: {z_diff:.3f}m")
 
-        # place_target 반경 이내 + pick_object가 위에 있어야 성공
-        xy_threshold = 0.08  # 8cm 이내
+        xy_threshold = 0.05  # 5cm 이내
         success = xy_dist < xy_threshold and z_diff > 0
         return success

@@ -17,7 +17,10 @@ robots/                        # 로봇별 구현
   piper.py,  piper_bridge.py   #   Piper (6DOF + parallel-jaw, joint8 mimic)
 
 tasks/
-  pick_and_place.py            # PickAndPlaceTask (8-step 모션 시퀀스)
+  pick_and_place.py            # PickAndPlaceTask (RobotSkills 기반)
+
+utils/
+  skills.py                    # RobotSkills (재사용 가능한 모션 프리미티브)
 
 Entry points:
   trajectory_bridge.py         # Franka bridge 실행
@@ -91,6 +94,26 @@ MoveIt FollowJointTrajectory 액션 → IsaacSim joint_command 토픽 변환.
 ### BaseTask (task.py)
 작업 추상 클래스. `run()` 호출 시 validate → execute → evaluate 순서 실행.
 
+### RobotSkills (utils/skills.py)
+RobotController를 감싸는 재사용 가능한 모션 프리미티브 라이브러리.
+Task에서 직접 컨트롤러를 호출하지 않고, 이 클래스를 통해 모션을 수행한다.
+
+기본 스킬:
+- `go_home()`, `go_to_joints(dict)` - 관절 이동
+- `open_gripper()`, `close_gripper()` - 그리퍼 제어
+- `approach(x,y,z, height, **ori)` - 자유 공간 이동 + orientation 보정
+- `descend(x,y,z, height)` - 직선 하강
+- `lift(x,y,z, height)`, `retreat(x,y,z, height)` - 직선 상승
+
+복합 스킬:
+- `pick(x,y,z)` - approach → descend → close_gripper → lift
+- `place(x,y,z)` - approach → descend → open_gripper → retreat
+- `insert(x,y,z, velocity_scaling)` - approach → 느린 직선 하강 (peg-in-hole용)
+
+유틸:
+- `get_current_arm_joints()` - 현재 arm 관절 위치 조회
+- `grasp_ori_kwargs` - RobotConfig의 grasp_orientation을 **kwargs dict로 변환
+
 ## Robot-Specific Details
 
 ### Piper (6-DOF)
@@ -108,16 +131,13 @@ MoveIt FollowJointTrajectory 액션 → IsaacSim joint_command 토픽 변환.
 
 ## Pick-and-Place Motion Sequence
 
+PickAndPlaceTask는 RobotSkills의 복합 스킬을 사용하여 시퀀스를 실행한다:
+
 ```
-Step 1: Home (joint space)
-Step 2: Open gripper
-Step 3: Pre-grasp (move_to_pose → Cartesian 시도 → MoveGroup 폴백)
-Step 3.5: Orientation 보정 (Cartesian, 같은 위치에서 정확한 자세로)
-Step 4: Grasp 하강 (move_linear, 현재 자세 유지)
-Step 5: Close gripper
-Step 6: Lift (move_linear, 현재 자세 유지)
-Step 7: Place approach (move_to_pose) + descent (move_linear)
-Step 8: Open gripper + retreat + Home 복귀
+1. 초기 관절 저장 (get_current_arm_joints)
+2. skills.pick(cx, cy, cz)   → approach → descend → close_gripper → lift
+3. skills.place(px, py, pz)  → approach → descend → open_gripper → retreat
+4. 초기 관절 복귀 (go_to_joints)
 ```
 
 높이 오프셋 (오브젝트 z + offset + gripper_length):

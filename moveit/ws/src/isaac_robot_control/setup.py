@@ -25,6 +25,7 @@ setup(
             "pick_and_place_piper = isaac_robot_control.pick_and_place_piper:main",
             "benchmark_piper = isaac_robot_control.benchmark_piper:main",
             "pick_and_place_service_piper = isaac_robot_control.pick_and_place_service_piper:main",
+            "stack_cube_service_piper = isaac_robot_control.stack_cube_service_piper:main",
         ],
     },
 )

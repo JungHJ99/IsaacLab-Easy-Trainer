@@ -1,7 +1,7 @@
 """
-Piper Pick-and-Place 서비스 노드.
+Piper Stack-Cube 서비스 노드.
 
-서비스 콜을 받으면 환경 리셋 → pick-and-place 1회 실행 → 결과 반환.
+서비스 콜을 받으면 환경 리셋 → RedCube를 GreenCube 위에 쌓기 → 결과 반환.
 노드는 종료하지 않고 다음 서비스 콜을 대기합니다.
 
 구조:
@@ -10,11 +10,11 @@ Piper Pick-and-Place 서비스 노드.
   두 노드를 분리하여 executor 충돌을 방지합니다.
 
 사용법 (MoveIt2 Docker 컨테이너 내부):
-    ros2 run isaac_robot_control pick_and_place_service_piper
-    ros2 run isaac_robot_control pick_and_place_service_piper --ros-args -p pick_object:=BlueCube -p place_target:=GreenPlate
+    ros2 run isaac_robot_control stack_cube_service_piper
+    ros2 run isaac_robot_control stack_cube_service_piper --ros-args -p pick_object:=RedCube -p place_target:=GreenCube
 
 서비스 호출:
-    ros2 service call /pick_and_place std_srvs/srv/Trigger
+    ros2 service call /stack_cube std_srvs/srv/Trigger
 """
 
 import time
@@ -24,7 +24,7 @@ from std_srvs.srv import Trigger
 
 from isaac_robot_control.robots import PiperConfig
 from isaac_robot_control.core import RobotController
-from isaac_robot_control.tasks import PickAndPlaceTask
+from isaac_robot_control.tasks import StackCubeTask
 
 
 def reset_env(node) -> bool:
@@ -49,9 +49,9 @@ def reset_env(node) -> bool:
 def main(args=None):
     rclpy.init(args=args)
 
-    tmp_node = rclpy.create_node("_pnp_service_params")
+    tmp_node = rclpy.create_node("_stack_cube_service_params")
     tmp_node.declare_parameter("pick_object", "RedCube")
-    tmp_node.declare_parameter("place_target", "WhitePlate")
+    tmp_node.declare_parameter("place_target", "GreenCube")
     pick_object = tmp_node.get_parameter("pick_object").get_parameter_value().string_value
     place_target = tmp_node.get_parameter("place_target").get_parameter_value().string_value
     tmp_node.destroy_node()
@@ -60,7 +60,7 @@ def main(args=None):
     controller = RobotController(
         robot_config=robot,
         object_names=[pick_object, place_target],
-        node_name="pick_and_place_service_piper",
+        node_name="stack_cube_service_piper",
     )
     controller.wait_for_ready()
 
@@ -73,7 +73,7 @@ def main(args=None):
     task_result = {"success": False, "message": ""}
 
     # 서비스 전용 노드 (별도 스레드에서 spin)
-    service_node = rclpy.create_node("pnp_service_server")
+    service_node = rclpy.create_node("stack_cube_service_server")
 
     def service_cb(request, response):
         nonlocal trial_count
@@ -95,7 +95,7 @@ def main(args=None):
         log.info(f"Trial #{trial_count} 결과: {response.message}")
         return response
 
-    service_node.create_service(Trigger, "/pick_and_place", service_cb)
+    service_node.create_service(Trigger, "/stack_cube", service_cb)
 
     # 서비스 노드를 별도 스레드에서 spin
     spin_thread = threading.Thread(
@@ -104,9 +104,9 @@ def main(args=None):
     spin_thread.start()
 
     log.info("=" * 50)
-    log.info(f"  Pick-and-Place 서비스 대기 중")
-    log.info(f"  pick: {pick_object}, place: {place_target}")
-    log.info(f"  호출: ros2 service call /pick_and_place std_srvs/srv/Trigger")
+    log.info(f"  Stack Cube 서비스 대기 중")
+    log.info(f"  pick: {pick_object}, target: {place_target}")
+    log.info(f"  호출: ros2 service call /stack_cube std_srvs/srv/Trigger")
     log.info("=" * 50)
 
     # 메인 루프: 서비스 콜 대기 → 작업 실행 → 결과 반환
@@ -129,14 +129,14 @@ def main(args=None):
             for _ in range(20):
                 rclpy.spin_once(controller, timeout_sec=0.1)
 
-            log.info("[DEBUG] 메인 스레드: PickAndPlaceTask 시작")
-            task = PickAndPlaceTask(
+            log.info("[DEBUG] 메인 스레드: StackCubeTask 시작")
+            task = StackCubeTask(
                 controller=controller,
                 pick_object=pick_object,
                 place_target=place_target,
             )
 
-            # 타임아웃 처리: 별도 스레드에서 실행, 150초 제한
+            # 타임아웃 처리: 별도 스레드에서 실행, 30초 제한
             task_done = threading.Event()
             task_success = [False]
 
@@ -153,10 +153,10 @@ def main(args=None):
                 log.info(f"[DEBUG] 메인 스레드: task.run() 완료, success={success}")
             else:
                 success = False
-                log.error(f"[TIMEOUT] 150초 초과 — 작업 실패 처리")
+                log.error(f"[TIMEOUT] 30초 초과 — 작업 실패 처리")
 
             task_result["success"] = success
-            task_result["message"] = "성공" if success else ("타임아웃 (150초)" if not finished else "실패")
+            task_result["message"] = "성공" if success else ("타임아웃 (30초)" if not finished else "실패")
             log.info(f"[DEBUG] 메인 스레드: result_ready.set() 호출")
             result_ready.set()
             log.info(f"[DEBUG] 메인 스레드: result_ready.set() 완료, 다음 대기")
