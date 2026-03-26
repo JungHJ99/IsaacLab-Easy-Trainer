@@ -234,6 +234,13 @@ class RobotController(Node):
 
         self.get_logger().info(f"포즈 이동: ({x:.3f}, {y:.3f}, {z:.3f})")
 
+        # [DEBUG] Cartesian 시도 전 joint state 스냅샷
+        js_before = self._current_joint_state
+        self.get_logger().info(
+            f"[DEBUG] move_to_pose 시작 joint_state: "
+            f"{dict(zip(js_before.name, [f'{p:.6f}' for p in js_before.position]))}"
+        )
+
         target = Pose()
         target.position.x = x
         target.position.y = y
@@ -247,7 +254,22 @@ class RobotController(Node):
         if success:
             return True
 
+        # [DEBUG] MoveGroup 폴백 전 joint state 스냅샷
+        js_after = self._current_joint_state
         self.get_logger().warn("Cartesian 실패, MoveGroup으로 폴백")
+        self.get_logger().info(
+            f"[DEBUG] 폴백 직전 joint_state: "
+            f"{dict(zip(js_after.name, [f'{p:.6f}' for p in js_after.position]))}"
+        )
+        # joint state 변화량 출력
+        if js_before and js_after and len(js_before.position) == len(js_after.position):
+            diffs = [abs(a - b) for a, b in zip(js_before.position, js_after.position)]
+            max_diff = max(diffs)
+            max_idx = diffs.index(max_diff)
+            self.get_logger().info(
+                f"[DEBUG] joint state 변화 최대: {js_before.name[max_idx]} = {max_diff:.6f} rad"
+            )
+
         return self._move_with_movegroup(x, y, z, ox, oy, oz, ow)
 
     def _move_with_movegroup(

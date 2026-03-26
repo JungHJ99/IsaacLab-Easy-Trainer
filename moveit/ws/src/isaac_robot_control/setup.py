@@ -26,6 +26,8 @@ setup(
             "benchmark_piper = isaac_robot_control.benchmark_piper:main",
             "pick_and_place_service_piper = isaac_robot_control.pick_and_place_service_piper:main",
             "stack_cube_service_piper = isaac_robot_control.stack_cube_service_piper:main",
+            "sponge_in_box_service_piper = isaac_robot_control.sponge_in_box_service_piper:main",
+            "motor_in_box_service = isaac_robot_control.motor_in_box_service:main",
         ],
     },
 )

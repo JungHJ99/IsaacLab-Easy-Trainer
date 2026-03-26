@@ -36,7 +36,7 @@ class PiperConfig(RobotConfig):
     def gripper(self) -> GripperConfig:
         return GripperConfig(
             joint_names=["joint7"],
-            open_width=0.035,
+            open_width=0.085,
             close_width=0.0,
             controller_topic="/gripper_controller/follow_joint_trajectory",
         )
@@ -55,7 +55,7 @@ class PiperConfig(RobotConfig):
 
     @property
     def gripper_length(self) -> float:
-        return -0.04
+        return -0.05
 
     @property
     def grasp_orientation(self) -> tuple[float, float, float, float]:

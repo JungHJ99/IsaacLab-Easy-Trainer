@@ -16,7 +16,8 @@ ros2_env/
     franka_env1.py   #   Franka + 프리미티브 오브젝트
     franka_env2.py   #   Franka + Nucleus USD 에셋
     piper_env1.py    #   Piper (URDF 임포트) + 프리미티브 오브젝트
-    piper_peg_in_hole.py  # Piper + Peg-in-Hole 태스크 환경
+    piper_env_custom.py  # Piper + Custom USD 오브젝트 (스펀지, 박스, 마우스 등)
+    piper_peg_in_hole.py # Piper + Peg-in-Hole 태스크 환경
 ```
 
 ## BaseEnv (base_env.py)
@@ -34,6 +35,8 @@ add_table(center=[0.18, 0, 0.012], scale=[0.6, 0.5, 0.04])
 
 add_object("RedCube", size=0.03, shape="cube", color=(1, 0.3, 0.2))
 add_object("Mug", usd_path="/path/to/mug.usd", size=0.1, scale=0.01)
+add_object("Basket", usd_path="/path/to.usd", size=0.2, scale=0.5,
+           collision_approximation="convexDecomposition")  # 오목한 형상
 
 add_camera(position=[1.8, 0, 1.6], orientation=[0, 40, 180],
            publish_rgb=True, publish_depth=False)
@@ -75,6 +78,27 @@ add_table(center=[0.18, 0, 0.012], scale=[0.6, 0.5, 0.04],
           spawn_range=[[0.05, -0.10], [0.30, 0.10]])
 # → 생략 시 테이블 면적의 50% 범위를 자동 사용
 ```
+
+### 오브젝트 (add_object)
+
+```python
+add_object("Name", size=0.06, shape="cube", color=(1, 0, 0))  # 프리미티브
+add_object("Name", usd_path="...", size=0.1, scale=0.5)       # USD 에셋
+add_object("Name", usd_path="...", size=0.1, scale=0.5,
+           position_range=[[x_min, y_min, z], [x_max, y_max, z]])  # 개별 배치 범위
+add_object("Name", usd_path="...", size=0.1, scale=0.5,
+           collision_approximation="convexDecomposition")  # 충돌 근사 방식
+```
+
+**collision_approximation** 옵션:
+- `"convexHull"` (기본) - 볼록 외곽선, 빠름. 일반 물체용.
+- `"convexDecomposition"` - 볼록 분해. 바구니/컵 등 오목한 형상에서 내부 공간 인식.
+- `"meshSimplification"` - 메쉬 단순화.
+- `"none"` - 원본 트라이앵글 메쉬 그대로. 가장 정확, 가장 느림.
+
+**position_range z 좌표 주의**: z는 월드 좌표. 반드시 로봇 base z보다 높아야 한다.
+로봇 base보다 낮으면 MoveIt Cartesian descend가 실패한다.
+공식: `z = 테이블_표면_z + 오브젝트_반높이`. 테이블 표면 z는 로봇 base z와 일치시켜야 한다.
 
 ### Joint Drive 튜닝 값
 - Revolute: stiffness=10000, damping=1000
@@ -121,6 +145,7 @@ ROS2 퍼블리셔 설정 → 리셋 서비스 설정 → mimic relay 설정 →
 - 프리미티브(cube/sphere/cylinder) 또는 USD 에셋 지원
 - 경로: `/World/{name}`
 - 물리: RigidBody + Collision + 고마찰 PhysicsMaterial (static=1.0, dynamic=1.0)
+- USD 에셋의 충돌 근사: `collision_approximation` 파라미터로 설정 (기본 "convexHull")
 - `set_position(np.array)` / `get_position() -> np.array`
 
 ### ObjectManager
@@ -129,6 +154,7 @@ ROS2 퍼블리셔 설정 → 리셋 서비스 설정 → mimic relay 설정 →
 - 마커 퍼블리쉬: `/simulation/object_markers/{name}` (Marker.SPHERE)
 - **좌표계**: 로봇 base의 역변환 적용 → 로봇 base 기준 상대 좌표
 - `setup_marker_publisher(robot_prim_path)` 호출 시 rclpy.init() + 노드 생성
+- **frame_id**: "panda_link0"으로 하드코딩 (실제 위치 계산에는 영향 없음, 표시용)
 
 ## ros2_bridge.py (OmniGraph 설정)
 
@@ -170,10 +196,29 @@ class PiperEnv1(BaseEnv):
         self.add_camera(position=[1.8, 0, 1.6], orientation=[0, 40, 180])
 ```
 
+### PiperEnvCustom (piper_env_custom.py)
+```python
+class PiperEnvCustom(BaseEnv):
+    def setup_scene(self):
+        self.add_table(center=[0.385, 0, 0.012], scale=[0.9, 1.0, 0.04], ...)
+        self.add_robot_from_urdf("piper", PIPER_URDF, position=[0, 0, 0.032])
+        # position_range로 오브젝트별 개별 배치 범위 설정
+        # z = 테이블 표면(0.032) + 오브젝트 반높이
+        self.add_object("WhiteBox", usd_path=..., size=0.2, scale=0.6,
+                        position_range=[[0.18, -0.18, 0.052], [0.43, 0.18, 0.052]],
+                        collision_approximation="convexDecomposition")  # 바구니 내부 인식
+        self.add_object("GreyCube", usd_path=..., size=0.08, scale=0.5,
+                        position_range=[[0.18, -0.18, 0.052], [0.43, 0.18, 0.052]])
+        # 테이블 위 범위 바깥 (큐브 범위와 겹치지 않는 곳)
+        self.add_object("Mouse", usd_path=..., size=0.1, scale=0.5,
+                        position_range=[[0.50, -0.18, 0.052], [0.75, 0.18, 0.052]])
+```
+
 ### 실행
 ```bash
 # IsaacSim Docker 컨테이너 내부
 /workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/piper_env1.py
+/workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/piper_env_custom.py
 ```
 
 ## 중요 구현 세부사항
@@ -184,4 +229,7 @@ class PiperEnv1(BaseEnv):
   URDF에서 mimic 제거 + bridge의 `_append_mimic()`으로 소프트웨어 동기화가 해결책.
 - **OmniGraph vs rclpy**: 센서/TF/joint_states는 OmniGraph (C++ 성능), 마커/서비스는 rclpy (유연성)
 - **마커 좌표계**: `publish_markers()`에서 로봇 base의 역변환을 적용하여 상대 좌표로 변환.
-  `header.frame_id = "panda_link0"` (하드코딩됨 - 다른 로봇 사용 시 수정 필요)
+  `header.frame_id = "panda_link0"` (하드코딩됨 — 실제 위치 계산에는 영향 없음, 컨트롤러가 frame_id를 사용하지 않음)
+- **로봇 위치와 오브젝트 z 정렬**: 로봇 base z = 테이블 표면 z로 맞추고,
+  position_range z = 테이블 표면 z + 오브젝트 반높이로 설정해야 MoveIt 플래닝이 성공한다.
+  로봇을 원점(0,0)에서 벗어나게 배치할 경우, position_range의 XY도 로봇 도달 범위 내로 조정 필요.

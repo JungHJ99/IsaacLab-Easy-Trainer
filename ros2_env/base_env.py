@@ -34,8 +34,7 @@ class BaseEnv:
 
         self._robot = None
         self._robot_prim_path = None
-        self._camera = None
-        self._camera_freq = 30
+        self._cameras = []  # list of dicts: {camera, freq, rgb, depth, pointcloud}
         self._obj_manager = None
         self._table_center = None
         self._table_scale = None
@@ -359,35 +358,97 @@ class BaseEnv:
     def add_object(self, name: str, size: float = 0.06,
                    color: tuple = (1.0, 0.3, 0.2), shape: str = "cube",
                    height: float | None = None,
-                   usd_path: str | None = None, scale: float = 1.0):
+                   usd_path: str | None = None, scale: float = 1.0,
+                   position_range: list | None = None,
+                   orientation_range: list | None = None,
+                   deformable: float | None = None,
+                   collision_approximation: str = "convexHull"):
         """테이블 위 오브젝트를 추가 (add_table 이후 호출).
 
         프리미티브: add_object("Cube", size=0.05, shape="cube")
         USD 에셋:  add_object("Mug", usd_path="/path/to/mug.usd", size=0.1, scale=0.01)
+        size: 겹침 방지 거리 계산용 (scale 적용 후 실제 크기에 맞게 설정).
+        position_range: [[x_max, y_max], [x_min, y_min]]. None이면 테이블 기본 범위.
+        orientation_range: [[rx_min, ry_min, rz_min], [rx_max, ry_max, rz_max]] 도 단위.
+        deformable: 0.0~1.0 부드러움 정도. 0.0=매우 부드러움, 1.0=단단함. None이면 rigid body.
+        collision_approximation: 충돌 근사 방식.
+            "convexHull" (기본) - 볼록 외곽선, 빠름
+            "convexDecomposition" - 볼록 분해, 오목한 형상 지원
+            "meshSimplification" - 메쉬 단순화
+            "none" - 트라이앵글 메쉬 그대로 사용 (가장 정확, 느림)
         """
         if self._obj_manager is None:
             raise RuntimeError("add_table()을 먼저 호출하세요.")
-        self._obj_manager.add_object(name, size, color, shape, height, usd_path, scale)
+        self._obj_manager.add_object(name, size, color, shape, height, usd_path, scale,
+                                     position_range, orientation_range, deformable,
+                                     collision_approximation)
 
-    def add_camera(self, position: list, orientation: list,
+    def add_bg_object(self, name: str, usd_path: str | None = None,
+                      position: tuple = (0.0, 0.0, 0.0),
+                      orientation: tuple | None = None,
+                      scale: float = 1.0,
+                      box_size: tuple | None = None,
+                      color: tuple = (0.5, 0.5, 0.5)):
+        """물리 없이 고정 배치되는 배경 오브젝트를 추가.
+
+        USD 에셋:  add_bg_object("Lamp", usd_path="/path/to/lamp.usd", position=(0.5, 0.3, 0.032))
+        직육면체:  add_bg_object("Shelf", box_size=(0.4, 0.3, 0.02), position=(0.3, 0, 0.1), color=(0.5, 0.5, 0.5))
+        """
+        if self._obj_manager is None:
+            raise RuntimeError("add_table()을 먼저 호출하세요.")
+        self._obj_manager.add_bg_object(name, usd_path, position=position,
+                                        orientation=orientation, scale=scale,
+                                        box_size=box_size, color=color)
+
+    def add_camera(self, position: list, orientation: list | None = None,
                    resolution: tuple = (640, 480), freq: int = 30,
                    publish_rgb: bool = True, publish_depth: bool = False,
-                   publish_pointcloud: bool = False):
-        """카메라를 추가. orientation은 [roll, pitch, yaw] 도 단위."""
-        import isaacsim.core.utils.numpy.rotations as rot_utils
+                   publish_pointcloud: bool = False,
+                   parent_prim: str | None = None,
+                   name: str | None = None,
+                   near_plane: float = 0.01):
+        """카메라를 추가.
+
+        orientation: [roll, pitch, yaw] 도 단위. None이면 회전 없음.
+                     지정 시 transform matrix로 적용.
+        parent_prim: 로봇 링크 경로 (예: "/piper/link6"). 지정 시 해당 링크에 부착.
+        name: 카메라 이름. None이면 자동 생성.
+        """
         from isaacsim.sensors.camera import Camera
 
-        self._camera = Camera(
-            prim_path="/World/Camera",
-            position=np.array(position),
+        cam_name = name or f"camera_{len(self._cameras)}"
+        if parent_prim is not None:
+            camera_path = f"{parent_prim}/{cam_name}"
+        else:
+            camera_path = f"/World/{cam_name}"
+
+        camera = Camera(
+            prim_path=camera_path,
+            name=cam_name,
             frequency=freq,
             resolution=resolution,
-            orientation=rot_utils.euler_angles_to_quats(np.array(orientation), degrees=True),
         )
-        self._camera_freq = freq
-        self._publish_rgb = publish_rgb
-        self._publish_depth = publish_depth
-        self._publish_pointcloud = publish_pointcloud
+        from pxr import Gf, UsdGeom
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(camera_path)
+        xform = UsdGeom.Xformable(prim)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(*position))
+        if orientation is not None:
+            xform.AddRotateXYZOp().Set(Gf.Vec3f(*orientation))
+
+        # near clipping plane 설정
+        cam_prim = UsdGeom.Camera(prim)
+        cam_prim.CreateClippingRangeAttr().Set(Gf.Vec2f(near_plane, 1000000.0))
+
+        self._cameras.append({
+            "camera": camera,
+            "freq": freq,
+            "rgb": publish_rgb,
+            "depth": publish_depth,
+            "pointcloud": publish_pointcloud,
+        })
 
     def setup_scene(self):
         """서브클래스에서 오버라이드: 로봇, 테이블, 오브젝트, 카메라를 배치."""
@@ -425,8 +486,8 @@ class BaseEnv:
             self._obj_manager.randomize_all()
 
         # 카메라 초기화
-        if self._camera:
-            self._camera.initialize()
+        for cam_info in self._cameras:
+            cam_info["camera"].initialize()
 
         # 렌더링 워밍업
         print("[INFO] 렌더링 워밍업 중...")
@@ -608,15 +669,17 @@ class BaseEnv:
             if self._robot_prim_path:
                 self._obj_manager.setup_marker_publisher(self._robot_prim_path)
 
-        if self._camera:
-            ros2_bridge.publish_camera_tf(self._camera)
-            ros2_bridge.publish_camera_info(self._camera, self._camera_freq)
-            if self._publish_rgb:
-                ros2_bridge.publish_rgb(self._camera, self._camera_freq)
-            if self._publish_depth:
-                ros2_bridge.publish_depth(self._camera, self._camera_freq)
-            if self._publish_pointcloud:
-                ros2_bridge.publish_pointcloud(self._camera, self._camera_freq)
+        for cam_info in self._cameras:
+            cam = cam_info["camera"]
+            freq = cam_info["freq"]
+            ros2_bridge.publish_camera_tf(cam)
+            ros2_bridge.publish_camera_info(cam, freq)
+            if cam_info["rgb"]:
+                ros2_bridge.publish_rgb(cam, freq)
+            if cam_info["depth"]:
+                ros2_bridge.publish_depth(cam, freq)
+            if cam_info["pointcloud"]:
+                ros2_bridge.publish_pointcloud(cam, freq)
 
     def _print_status(self):
         """시작 시 상태 출력."""
@@ -628,16 +691,17 @@ class BaseEnv:
             ns = ros2_bridge.NS
             print(f"  퍼블리쉬: {ns}/joint_states, {ns}/tf, {ns}/clock")
             print(f"  구독:     {ns}/joint_command")
-        if self._camera:
+        for cam_info in self._cameras:
+            cam = cam_info["camera"]
             ns = ros2_bridge.NS
-            topics = [f"{ns}/camera_camera_info", f"{ns}/camera_tf"]
-            if self._publish_rgb:
-                topics.append(f"{ns}/camera_rgb")
-            if self._publish_depth:
-                topics.append(f"{ns}/camera_depth")
-            if self._publish_pointcloud:
-                topics.append(f"{ns}/camera_pointcloud")
-            print(f"  카메라:   {', '.join(topics)}")
+            topics = [f"{ns}/{cam.name}_camera_info", f"{ns}/{cam.name}_tf"]
+            if cam_info["rgb"]:
+                topics.append(f"{ns}/{cam.name}_rgb")
+            if cam_info["depth"]:
+                topics.append(f"{ns}/{cam.name}_depth")
+            if cam_info["pointcloud"]:
+                topics.append(f"{ns}/{cam.name}_pointcloud")
+            print(f"  카메라({cam.name}): {', '.join(topics)}")
         if self._obj_manager and self._obj_manager.objects:
             print(f"\n  오브젝트 ({len(self._obj_manager.objects)}개):")
             self._obj_manager.print_positions()

@@ -14,33 +14,66 @@ class TargetObject:
 
     Args:
         usd_path: USD 에셋 파일 경로. 지정 시 shape/color 무시.
-                  로컬 경로 또는 Nucleus 경로(omniverse://...) 모두 가능.
         scale: USD 에셋의 스케일 (기본 1.0). usd_path 사용 시에만 적용.
+        position_range: [[x_max, y_max], [x_min, y_min]]. None이면 테이블 기본 범위.
+        orientation_range: [[rx_min, ry_min, rz_min], [rx_max, ry_max, rz_max]] 도 단위.
+                           None이면 회전 없음.
     """
 
     def __init__(self, name: str, stage, size: float = 0.06,
                  color: tuple = (1.0, 0.3, 0.2), shape: str = "cube",
                  height: float | None = None,
-                 usd_path: str | None = None, scale: float = 1.0):
-        from pxr import UsdGeom, UsdPhysics, Gf
+                 usd_path: str | None = None, scale: float = 1.0,
+                 position_range: list | None = None,
+                 orientation_range: list | None = None,
+                 deformable: float | None = None,
+                 collision_approximation: str = "convexHull"):
+        from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
         self.name = name
         self.prim_path = f"/World/{name}"
         self.size = size
         self.color = color
         self._stage = stage
+        self.position_range = position_range
+        self.orientation_range = orientation_range
+        self._scale = scale
 
         if usd_path is not None:
             # USD 에셋 로드
-            prim = stage.DefinePrim(self.prim_path, "Xform")
+            prim = stage.DefinePrim(self.prim_path)
             prim.GetReferences().AddReference(usd_path)
             self._xform = UsdGeom.Xformable(prim)
-            self._translate_op = self._xform.AddTranslateOp()
-            if scale != 1.0:
+            self._xform.ClearXformOpOrder()
+            self.half_height = size / 2.0
+
+            if orientation_range is not None:
+                # transform matrix (rotation+scale) + translate
+                self._use_transform_op = True
+                # 초기값: orientation_range의 중간값
+                ori_min, ori_max = orientation_range
+                init_ori = tuple((ori_min[i] + ori_max[i]) / 2.0 for i in range(3))
+                mat = self._build_transform_matrix(init_ori, scale)
+                self._xform.AddTransformOp().Set(mat)
+            else:
+                self._use_transform_op = False
                 self._xform.AddScaleOp().Set(Gf.Vec3d(scale, scale, scale))
-            self.half_height = size / 2.0  # size를 높이 힌트로 사용
+            self._xform.AddTranslateOp()
+
+            # USD 참조의 메쉬에 CollisionAPI 적용
+            if prim.IsA(UsdGeom.Mesh):
+                UsdPhysics.CollisionAPI.Apply(prim)
+                mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(prim)
+                mesh_collision.CreateApproximationAttr(collision_approximation)
+            else:
+                for desc in Usd.PrimRange(prim):
+                    if desc.IsA(UsdGeom.Mesh):
+                        UsdPhysics.CollisionAPI.Apply(desc)
+                        mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(desc)
+                        mesh_collision.CreateApproximationAttr(collision_approximation)
         else:
             # 프리미티브 생성
+            self._use_transform_op = False
             if shape == "cube":
                 geom = UsdGeom.Cube.Define(stage, self.prim_path)
                 geom.GetSizeAttr().Set(size)
@@ -57,12 +90,57 @@ class TargetObject:
                 self.half_height = actual_height / 2.0
 
             self._xform = UsdGeom.Xformable(stage.GetPrimAtPath(self.prim_path))
-            self._translate_op = self._xform.AddTranslateOp()
+            self._xform.AddTranslateOp()
             geom.CreateDisplayColorAttr([color])
 
         prim = stage.GetPrimAtPath(self.prim_path)
-        UsdPhysics.RigidBodyAPI.Apply(prim)
-        UsdPhysics.CollisionAPI.Apply(prim)
+
+        if deformable is not None:
+            # Deformable body (RigidBody와 양립 불가)
+            from omni.physx.scripts import deformableUtils
+            from pxr import PhysxSchema, UsdShade
+            import math
+
+            # 메쉬 prim 찾기
+            mesh_prim = prim
+            mesh_path = self.prim_path
+            if not prim.IsA(UsdGeom.Mesh):
+                for desc in Usd.PrimRange(prim):
+                    if desc.IsA(UsdGeom.Mesh):
+                        mesh_prim = desc
+                        mesh_path = str(desc.GetPath())
+                        break
+
+            # deformable 0.0=매우 부드러움(100 Pa), 1.0=단단함(100000 Pa)
+            young_modulus = 100.0 * math.pow(1000.0, deformable)
+
+            # deformableUtils로 simulation mesh 생성 + API 설정
+            deformableUtils.add_physx_deformable_body(
+                stage,
+                mesh_path,
+                collision_simplification=True,
+                simulation_hexahedral_resolution=2,
+                self_collision=False,
+            )
+
+            # Deformable body material 생성 및 바인딩
+            deform_mat_path = f"{self.prim_path}/DeformableMaterial"
+            deformableUtils.add_deformable_body_material(
+                stage,
+                deform_mat_path,
+                youngs_modulus=young_modulus,
+                poissons_ratio=0.45,
+                damping_scale=0.1,
+                dynamic_friction=1.0,
+            )
+            from pxr import UsdShade
+            mat = UsdShade.Material(stage.GetPrimAtPath(deform_mat_path))
+            UsdShade.MaterialBindingAPI.Apply(mesh_prim).Bind(
+                mat, UsdShade.Tokens.weakerThanDescendants, "physics",
+            )
+        else:
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            UsdPhysics.CollisionAPI.Apply(prim)
 
         # 높은 마찰력으로 그리핑 안정성 향상
         material_path = f"{self.prim_path}/PhysicsMaterial"
@@ -72,7 +150,6 @@ class TargetObject:
         mat_api.CreateStaticFrictionAttr(1.0)
         mat_api.CreateDynamicFrictionAttr(1.0)
         mat_api.CreateRestitutionAttr(0.0)
-        # 머티리얼을 콜리전에 바인딩
         from pxr import UsdShade
         UsdShade.MaterialBindingAPI.Apply(prim).Bind(
             UsdShade.Material(mat_prim),
@@ -82,10 +159,71 @@ class TargetObject:
 
         self._position = np.array([0.0, 0.0, 0.0])
 
-    def set_position(self, position: np.ndarray):
+    @staticmethod
+    def _euler_to_rotation(orientation):
+        """(rx, ry, rz) degrees → 3x3 rotation matrix rows."""
+        import math
+        rx, ry, rz = [math.radians(a) for a in orientation]
+        cx, sx = math.cos(rx), math.sin(rx)
+        cy, sy = math.cos(ry), math.sin(ry)
+        cz, sz = math.cos(rz), math.sin(rz)
+        return (
+            (cy*cz, -cy*sz, sy),
+            (sx*sy*cz+cx*sz, -sx*sy*sz+cx*cz, -sx*cy),
+            (-cx*sy*cz+sx*sz, cx*sy*sz+sx*cz, cx*cy),
+        )
+
+    @staticmethod
+    def _build_transform_matrix(orientation, scale, position=(0, 0, 0)):
+        """orientation(degrees) + scale + position → Gf.Matrix4d.
+
+        USD는 row-vector convention (p' = p * M)이므로 rotation을 전치하여 저장.
+        """
         from pxr import Gf
+        rot = TargetObject._euler_to_rotation(orientation)
+        r = rot
+        s = scale
+        # 전치: r[row][col] → r[col][row]
+        return Gf.Matrix4d(
+            s*r[0][0], s*r[1][0], s*r[2][0], 0,
+            s*r[0][1], s*r[1][1], s*r[2][1], 0,
+            s*r[0][2], s*r[1][2], s*r[2][2], 0,
+            position[0], position[1], position[2], 1,
+        )
+
+    def set_position(self, position: np.ndarray):
+        from pxr import Gf, UsdGeom
         self._position = position.copy()
-        self._translate_op.Set(Gf.Vec3d(*position.tolist()))
+        prim = self._stage.GetPrimAtPath(self.prim_path)
+        xform = UsdGeom.Xformable(prim)
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpName() == "xformOp:translate":
+                op.Set(Gf.Vec3d(*position.tolist()))
+                return
+
+    def set_orientation(self, orientation: tuple):
+        """orientation_range가 설정된 USD 오브젝트의 orientation을 갱신."""
+        from pxr import Gf, UsdGeom
+        from scipy.spatial.transform import Rotation as R
+
+        if not self._use_transform_op:
+            return
+        prim = self._stage.GetPrimAtPath(self.prim_path)
+        xform = UsdGeom.Xformable(prim)
+
+        # euler → quaternion (scipy: extrinsic XYZ = intrinsic ZYX)
+        quat_xyzw = R.from_euler('XYZ', orientation, degrees=True).as_quat()
+        quat = Gf.Quatf(float(quat_xyzw[3]), float(quat_xyzw[0]),
+                         float(quat_xyzw[1]), float(quat_xyzw[2]))
+
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpName() == "xformOp:orient":
+                op.Set(quat)
+                return
+            if op.GetOpName() == "xformOp:transform":
+                mat = self._build_transform_matrix(orientation, self._scale)
+                op.Set(mat)
+                return
 
     def get_position(self) -> np.ndarray:
         from pxr import UsdGeom
@@ -96,6 +234,73 @@ class TargetObject:
         return np.array([t[0], t[1], t[2]])
 
 
+class BgObject:
+    """물리 없이 고정 배치되는 배경 오브젝트.
+
+    USD 에셋 또는 프리미티브(cube)로 생성 가능.
+
+    Args:
+        usd_path: USD 에셋 파일 경로. None이면 프리미티브 생성.
+        position: (x, y, z) 월드 좌표.
+        orientation: (roll, pitch, yaw) 도 단위. None이면 회전 없음.
+        scale: 스케일 (기본 1.0). USD 에셋 전용.
+        box_size: (x, y, z) 직육면체 크기. usd_path=None일 때 사용.
+        color: (r, g, b) 프리미티브 색상.
+    """
+
+    def __init__(self, name: str, stage, usd_path: str | None = None,
+                 position: tuple = (0.0, 0.0, 0.0),
+                 orientation: tuple | None = None,
+                 scale: float = 1.0,
+                 box_size: tuple | None = None,
+                 color: tuple = (0.5, 0.5, 0.5)):
+        from pxr import UsdGeom, Gf
+
+        self.name = name
+        self.prim_path = f"/World/{name}"
+        self._stage = stage
+
+        if usd_path is not None:
+            prim = stage.DefinePrim(self.prim_path)
+            prim.GetReferences().AddReference(usd_path)
+        elif box_size is not None:
+            # UsdGeom.Cube는 size=1 고정이므로 scale로 각 축 크기 조절
+            geom = UsdGeom.Cube.Define(stage, self.prim_path)
+            geom.GetSizeAttr().Set(1.0)
+            geom.CreateDisplayColorAttr([color])
+            scale = 1.0  # box_size가 스케일 역할
+
+        xform = UsdGeom.Xformable(stage.GetPrimAtPath(self.prim_path))
+        xform.ClearXformOpOrder()
+
+        if orientation is not None:
+            rot = TargetObject._euler_to_rotation(orientation)
+            r = rot
+            if box_size is not None:
+                sx, sy, sz = box_size[0] / 2, box_size[1] / 2, box_size[2] / 2
+                mat = Gf.Matrix4d(
+                    sx*r[0][0], sx*r[1][0], sx*r[2][0], 0,
+                    sy*r[0][1], sy*r[1][1], sy*r[2][1], 0,
+                    sz*r[0][2], sz*r[1][2], sz*r[2][2], 0,
+                    position[0], position[1], position[2], 1,
+                )
+            else:
+                s = scale
+                mat = Gf.Matrix4d(
+                    s*r[0][0], s*r[1][0], s*r[2][0], 0,
+                    s*r[0][1], s*r[1][1], s*r[2][1], 0,
+                    s*r[0][2], s*r[1][2], s*r[2][2], 0,
+                    position[0], position[1], position[2], 1,
+                )
+            xform.AddTransformOp().Set(mat)
+        else:
+            xform.AddTranslateOp().Set(Gf.Vec3d(*position))
+            if box_size is not None:
+                xform.AddScaleOp().Set(Gf.Vec3d(box_size[0]/2, box_size[1]/2, box_size[2]/2))
+            elif scale != 1.0:
+                xform.AddScaleOp().Set(Gf.Vec3d(scale, scale, scale))
+
+
 class ObjectManager:
     """여러 오브젝트를 생성, 랜덤 배치, ROS2 마커 퍼블리쉬하는 매니저."""
 
@@ -103,11 +308,11 @@ class ObjectManager:
                  spawn_range: list | None = None):
         self._stage = stage
         self.objects: list[TargetObject] = []
+        self.bg_objects: list[BgObject] = []
 
         table_surface_z = table_center[2] + table_scale[2] / 2.0
 
         if spawn_range is not None:
-            # [[x_min, y_min], [x_max, y_max]]
             self._x_range = (spawn_range[0][0], spawn_range[1][0])
             self._y_range = (spawn_range[0][1], spawn_range[1][1])
         else:
@@ -125,19 +330,43 @@ class ObjectManager:
     def add_object(self, name: str, size: float = 0.06,
                    color: tuple = (1.0, 0.3, 0.2), shape: str = "cube",
                    height: float | None = None,
-                   usd_path: str | None = None, scale: float = 1.0) -> TargetObject:
-        obj = TargetObject(name, self._stage, size, color, shape, height, usd_path, scale)
+                   usd_path: str | None = None, scale: float = 1.0,
+                   position_range: list | None = None,
+                   orientation_range: list | None = None,
+                   deformable: float | None = None,
+                   collision_approximation: str = "convexHull") -> TargetObject:
+        obj = TargetObject(name, self._stage, size, color, shape, height,
+                           usd_path, scale, position_range, orientation_range,
+                           deformable, collision_approximation)
         self.objects.append(obj)
+        return obj
+
+    def add_bg_object(self, name: str, usd_path: str | None = None,
+                      position: tuple = (0.0, 0.0, 0.0),
+                      orientation: tuple | None = None,
+                      scale: float = 1.0,
+                      box_size: tuple | None = None,
+                      color: tuple = (0.5, 0.5, 0.5)) -> BgObject:
+        obj = BgObject(name, self._stage, usd_path, position=position,
+                       orientation=orientation, scale=scale,
+                       box_size=box_size, color=color)
+        self.bg_objects.append(obj)
         return obj
 
     def randomize_all(self):
         """모든 오브젝트를 테이블 위 랜덤 위치에 배치 (겹침 방지)."""
         positions = []
         for obj in self.objects:
+            if obj.position_range is not None:
+                x_range = (obj.position_range[0][0], obj.position_range[1][0])
+                y_range = (obj.position_range[0][1], obj.position_range[1][1])
+            else:
+                x_range = self._x_range
+                y_range = self._y_range
             for _ in range(100):
-                x = np.random.uniform(*self._x_range)
-                y = np.random.uniform(*self._y_range)
-                z = self._surface_z + obj.half_height + 0.002
+                x = np.random.uniform(*x_range)
+                y = np.random.uniform(*y_range)
+                z = self._surface_z + obj.half_height + 0.05
                 pos = np.array([x, y, z])
 
                 too_close = False
@@ -148,6 +377,15 @@ class ObjectManager:
                         break
                 if not too_close:
                     break
+
+            # orientation 랜덤
+            if obj.orientation_range is not None:
+                ori_min = obj.orientation_range[0]
+                ori_max = obj.orientation_range[1]
+                ori = tuple(
+                    np.random.uniform(ori_min[i], ori_max[i]) for i in range(3)
+                )
+                obj.set_orientation(ori)
 
             obj.set_position(pos)
             positions.append(pos)

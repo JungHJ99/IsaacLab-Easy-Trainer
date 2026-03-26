@@ -11,7 +11,7 @@ RUN rm -f /usr/share/keyrings/ros2-latest-archive-keyring.gpg && \
     apt-get install -y ros-humble-rmw-cyclonedds-cpp && \
     rm -rf /var/lib/apt/lists/*
 
-ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+# ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 
 # bash 시작 시 자동으로 ROS2 환경 로드
