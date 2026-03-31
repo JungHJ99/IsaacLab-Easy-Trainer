@@ -1,194 +1,239 @@
-![Isaac Lab](docs/source/_static/isaaclab.jpg)
+# IsaacLab — Piper Robot Manipulation Framework
 
----
+NVIDIA Isaac Sim 4.5 기반의 로봇 매니퓰레이션 프레임워크.
+**Piper 6-DOF 로봇**으로 Pick-and-Place, Motor-in-Box 등의 태스크를 수행하며,
+모션 플래너로 **cuRobo** 또는 **MoveIt2**를 선택할 수 있다.
 
-# Isaac Lab
-
-[![IsaacSim](https://img.shields.io/badge/IsaacSim-4.5.0-silver.svg)](https://docs.isaacsim.omniverse.nvidia.com/latest/index.html)
-[![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://docs.python.org/3/whatsnew/3.10.html)
-[![Linux platform](https://img.shields.io/badge/platform-linux--64-orange.svg)](https://releases.ubuntu.com/20.04/)
-[![Windows platform](https://img.shields.io/badge/platform-windows--64-orange.svg)](https://www.microsoft.com/en-us/)
-[![pre-commit](https://img.shields.io/github/actions/workflow/status/isaac-sim/IsaacLab/pre-commit.yaml?logo=pre-commit&logoColor=white&label=pre-commit&color=brightgreen)](https://github.com/isaac-sim/IsaacLab/actions/workflows/pre-commit.yaml)
-[![docs status](https://img.shields.io/github/actions/workflow/status/isaac-sim/IsaacLab/docs.yaml?label=docs&color=brightgreen)](https://github.com/isaac-sim/IsaacLab/actions/workflows/docs.yaml)
-[![License](https://img.shields.io/badge/license-BSD--3-yellow.svg)](https://opensource.org/licenses/BSD-3-Clause)
-[![License](https://img.shields.io/badge/license-Apache--2.0-yellow.svg)](https://opensource.org/license/apache-2-0)
-
-
-**Isaac Lab** is a GPU-accelerated, open-source framework designed to unify and simplify robotics research workflows, such as reinforcement learning, imitation learning, and motion planning. Built on [NVIDIA Isaac Sim](https://docs.isaacsim.omniverse.nvidia.com/latest/index.html), it combines fast and accurate physics and sensor simulation, making it an ideal choice for sim-to-real transfer in robotics.
-
-Isaac Lab provides developers with a range of essential features for accurate sensor simulation, such as RTX-based cameras, LIDAR, or contact sensors. The framework's GPU acceleration enables users to run complex simulations and computations faster, which is key for iterative processes like reinforcement learning and data-intensive tasks. Moreover, Isaac Lab can run locally or be distributed across the cloud, offering flexibility for large-scale deployments.
-
-
-## Key Features
-
-Isaac Lab offers a comprehensive set of tools and environments designed to facilitate robot learning:
-- **Robots**: A diverse collection of robots, from manipulators, quadrupeds, to humanoids, with 16 commonly available models.
-- **Environments**: Ready-to-train implementations of more than 30 environments, which can be trained with popular reinforcement learning frameworks such as RSL RL, SKRL, RL Games, or Stable Baselines. We also support multi-agent reinforcement learning.
-- **Physics**: Rigid bodies, articulated systems, deformable objects
-- **Sensors**: RGB/depth/segmentation cameras, camera annotations, IMU, contact sensors, ray casters.
-
-
-## Getting Started
-
-Our [documentation page](https://isaac-sim.github.io/IsaacLab) provides everything you need to get started, including detailed tutorials and step-by-step guides. Follow these links to learn more about:
-
-- [Installation steps](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html#local-installation)
-- [Reinforcement learning](https://isaac-sim.github.io/IsaacLab/main/source/overview/reinforcement-learning/rl_existing_scripts.html)
-- [Tutorials](https://isaac-sim.github.io/IsaacLab/main/source/tutorials/index.html)
-- [Available environments](https://isaac-sim.github.io/IsaacLab/main/source/overview/environments.html)
-
-
-## Isaac Sim Version Dependency
-
-Isaac Lab is built on top of Isaac Sim and requires specific versions of Isaac Sim that are compatible with each release of Isaac Lab.
-Below, we outline the recent Isaac Lab releases and GitHub branches and their corresponding dependency versions for Isaac Sim.
-
-| Isaac Lab Version             | Isaac Sim Version |
-| ----------------------------- | ----------------- |
-| `main` branch                 | Isaac Sim 4.5     |
-| `v2.1.1`                      | Isaac Sim 4.5     |
-| `v2.1.0`                      | Isaac Sim 4.5     |
-| `v2.0.2`                      | Isaac Sim 4.5     |
-| `v2.0.1`                      | Isaac Sim 4.5     |
-| `v2.0.0`                      | Isaac Sim 4.5     |
-| `feature/isaacsim_5_0` branch | Isaac Sim 5.0     |
-
-Note that the `feature/isaacsim_5_0` will contain active updates and may contain some breaking changes
-until the official Isaac Lab 2.2 release.
-It currently requires the [Isaac Sim 5.0 branch](https://github.com/isaac-sim/IsaacSim) available on GitHub built from source.
-Please refer to the README in the `feature/isaacsim_5_0` branch for instructions for using Isaac Lab with Isaac Sim 5.0.
-We are actively working on introducing backwards compatibility support for Isaac Sim 4.5 for this branch.
-
-
-## Contributing to Isaac Lab
-
-We wholeheartedly welcome contributions from the community to make this framework mature and useful for everyone.
-These may happen as bug reports, feature requests, or code contributions. For details, please check our
-[contribution guidelines](https://isaac-sim.github.io/IsaacLab/main/source/refs/contributing.html).
-
-## Show & Tell: Share Your Inspiration
-
-We encourage you to utilize our [Show & Tell](https://github.com/isaac-sim/IsaacLab/discussions/categories/show-and-tell) area in the
-`Discussions` section of this repository. This space is designed for you to:
-
-* Share the tutorials you've created
-* Showcase your learning content
-* Present exciting projects you've developed
-
-By sharing your work, you'll inspire others and contribute to the collective knowledge
-of our community. Your contributions can spark new ideas and collaborations, fostering
-innovation in robotics and simulation.
-
-## Troubleshooting
-
-Please see the [troubleshooting](https://isaac-sim.github.io/IsaacLab/main/source/refs/troubleshooting.html) section for
-common fixes or [submit an issue](https://github.com/isaac-sim/IsaacLab/issues).
-
-For issues related to Isaac Sim, we recommend checking its [documentation](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/overview.html)
-or opening a question on its [forums](https://forums.developer.nvidia.com/c/agx-autonomous-machines/isaac/67).
-
-## Support
-
-* Please use GitHub [Discussions](https://github.com/isaac-sim/IsaacLab/discussions) for discussing ideas, asking questions, and requests for new features.
-* Github [Issues](https://github.com/isaac-sim/IsaacLab/issues) should only be used to track executable pieces of work with a definite scope and a clear deliverable. These can be fixing bugs, documentation issues, new features, or general updates.
-
-## Connect with the NVIDIA Omniverse Community
-
-Do you have a project or resource you'd like to share more widely? We'd love to hear from you!
-Reach out to the NVIDIA Omniverse Community team at OmniverseCommunity@nvidia.com to explore opportunities
-to spotlight your work.
-
-You can also join the conversation on the [Omniverse Discord](https://discord.com/invite/nvidiaomniverse) to
-connect with other developers, share your projects, and help grow a vibrant, collaborative ecosystem
-where creativity and technology intersect. Your contributions can make a meaningful impact on the Isaac Lab community and beyond!
-
-## License
-
-The Isaac Lab framework is released under [BSD-3 License](LICENSE). The `isaaclab_mimic` extension and its corresponding standalone scripts are released under [Apache 2.0](LICENSE-mimic). The license files of its dependencies and assets are present in the [`docs/licenses`](docs/licenses) directory.
-
-## Acknowledgement
-
-Isaac Lab development initiated from the [Orbit](https://isaac-orbit.github.io/) framework. We would appreciate if you would cite it in academic publications as well:
+## Architecture
 
 ```
-@article{mittal2023orbit,
-   author={Mittal, Mayank and Yu, Calvin and Yu, Qinxi and Liu, Jingzhou and Rudin, Nikita and Hoeller, David and Yuan, Jia Lin and Singh, Ritvik and Guo, Yunrong and Mazhar, Hammad and Mandlekar, Ajay and Babich, Buck and State, Gavriel and Hutter, Marco and Garg, Animesh},
-   journal={IEEE Robotics and Automation Letters},
-   title={Orbit: A Unified Simulation Framework for Interactive Robot Learning Environments},
-   year={2023},
-   volume={8},
-   number={6},
-   pages={3740-3747},
-   doi={10.1109/LRA.2023.3270034}
-}
+IsaacLab/
+├── ros2_env/                  # Isaac Sim + ROS2 시뮬레이션 환경
+│   ├── base_env.py            #   BaseEnv (씬 구성, ROS2 퍼블리싱, 도메인 랜덤화)
+│   ├── objects.py             #   오브젝트 관리 (랜덤 배치, 마커 퍼블리싱)
+│   └── envs/                  #   환경 구현체
+│       ├── pi0_env.py         #     Piper V100 + 큐브 + AlienDoll
+│       ├── piper_env_custom.py#     Piper + 스펀지/박스/마우스 등
+│       └── ...
+│
+├── isaac_control_core/        # 플래너 독립적 공통 추상화 (symlink으로 공유)
+│   ├── core/                  #   MotionController ABC, RobotConfig, BaseTask
+│   ├── robots/                #   PiperConfig, PiperV100Config, FrankaConfig
+│   ├── tasks/                 #   PickAndPlaceTask, MotorInBoxTask, StackCubeTask
+│   ├── utils/skills.py        #   RobotSkills (pick, place, place_on_object)
+│   └── services/              #   서비스 러너 + GripperScaleBridge
+│
+├── curobo/                    # cuRobo 모션 플래너
+│   ├── Dockerfile             #   CUDA 12.4 + PyTorch + ROS2 + cuRobo
+│   ├── docker_start.sh        #   컨테이너 실행 스크립트
+│   └── ws/src/curobo_control/ #   CuroboController 패키지
+│
+├── moveit/                    # MoveIt2 모션 플래너
+│   ├── Dockerfile
+│   └── ws/src/                #   MoveItController + launch 파일
+│
+├── ros_pkgs/
+│   └── piper_description/     # Piper URDF + 메쉬 (symlink으로 공유)
+│
+└── docker/                    # Isaac Sim Docker 설정
+    ├── docker-compose.yaml
+    ├── .env.base
+    └── .env.ros2
 ```
 
-## Acknowledgement
+## Prerequisites
 
-Isaac Lab development initiated from the [Orbit](https://isaac-orbit.github.io/) framework.
-We gratefully acknowledge the authors of Orbit for their foundational contributions.
+- **OS**: Ubuntu 22.04
+- **GPU**: NVIDIA GPU (RTX 3070 이상 권장, 8GB VRAM 최소)
+- **Docker**: Docker + NVIDIA Container Toolkit
+- **NGC**: NVIDIA NGC 계정 (Isaac Sim 이미지용)
 
+## Quick Start
 
-## 설치 및 빌드 과정
+### 1. 저장소 클론
+
+```bash
+git clone <repository-url> IsaacLab
+cd IsaacLab
 ```
-docker pull nvcr.io/nvidia/isaac-sim:4.5.0
-```
-```
+
+### 2. Isaac Sim Docker 빌드 + 실행
+
+```bash
+# NGC 로그인 (최초 1회 — Isaac Sim 베이스 이미지 pull에 필요)
+# https://ngc.nvidia.com/setup 에서 API Key 발급
 docker login nvcr.io
-Username: $oauthtoken
-Password: <당신의 NGC API 키>
-```
-```
-git clone https://github.com/isaac-sim/IsaacLab.git
-```
-```
-cd IsaacLab/docker
+# Username: $oauthtoken
+# Password: <NGC API Key>
+
+# Isaac Sim 이미지 빌드
+cd docker
 docker compose --profile base --env-file .env.base build
 docker compose --profile ros2 --env-file .env.base --env-file .env.ros2 build
-```
-```
 cd ..
+
+# X11 포워딩 허용
+xhost +local:docker
+
+# Isaac Sim 컨테이너 실행
 bash docker_start.sh
 ```
-```
-docker exec -it isaac_lab_dev bash
+
+**컨테이너 안에서 초기 설정** (최초 1회):
+```bash
+# isaac_lab_dev 컨테이너 안에서
 ln -s /isaac-sim /workspace/isaaclab/_isaac_sim
 ./isaaclab.sh --install
 ```
+
+### 3. Isaac Sim 환경 실행
+
+```bash
+# isaac_lab_dev 컨테이너 안에서
+
+# GUI 모드
+/workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/pi0_env.py
+
+# Headless 모드
+/workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/pi0_env.py --headless
 ```
-xhost +local:docker
+
+환경이 실행되면 아래 ROS2 토픽이 자동 퍼블리싱됩니다:
+- `/simulation/joint_states` — 관절 상태
+- `/simulation/tf` — 로봇 + 오브젝트 TF
+- `/simulation/joint_command` — 관절 명령 (구독)
+- `/simulation/object_markers/{name}` — 오브젝트 위치/방향 마커
+- `/simulation/{cam_name}_rgb` — 카메라 RGB 이미지
+- `/simulation/reset_env` — 환경 리셋 서비스
+
+### 4. cuRobo Docker 빌드 + 실행
+
+```bash
+# 호스트에서 (새 터미널)
+cd IsaacLab/curobo
+
+# cuRobo 이미지 빌드 (최초 1회, 10~15분 소요)
+docker build -t curobo-ros2:latest .
+
+# cuRobo 컨테이너 실행
+bash docker_start.sh
 ```
+
+### 5. cuRobo 서비스 노드 실행
+
+```bash
+# curobo_dev 컨테이너 안에서
+cd /root/ws
+colcon build
+source install/setup.bash
+
+# Pick-and-Place 서비스 실행
+ros2 run curobo_control pick_and_place_service
+
+# 또는 Motor-in-Box 서비스 실행
+ros2 run curobo_control motor_in_box_service
 ```
+
+### 6. 서비스 호출 (태스크 실행)
+
+```bash
+# 아무 터미널에서 (ROS2 네트워크 공유)
+ros2 service call /pick_and_place std_srvs/srv/Trigger
+ros2 service call /motor_in_box std_srvs/srv/Trigger
+```
+
+### 7. (선택) MoveIt2 Docker 빌드 + 실행
+
+```bash
+cd IsaacLab/moveit
+
+# MoveIt 이미지 빌드
+docker build -t moveit2-isaac:latest .
+
+# MoveIt 컨테이너 실행
+bash docker_start.sh
+
+# 컨테이너 안에서
+cd /root/ws
+colcon build
+source install/setup.bash
+
+# MoveIt + RViz launch
+ros2 launch isaac_robot_control isaac_moveit_piper.launch.py
+
+# 서비스 실행
+ros2 run isaac_robot_control pick_and_place_service_piper
+```
+
+## ROS2 파라미터
+
+```bash
+# pick/place 대상 오브젝트 변경
+ros2 run curobo_control pick_and_place_service \
+  --ros-args -p pick_object:=RedCube -p place_target:=WhitePlate
+
+# grasp 방향 설정
+ros2 run curobo_control pick_and_place_service \
+  --ros-args -p grasp_yaw:=auto       # 오브젝트 yaw 자동 정렬
+  # -p grasp_yaw:=vertical            # 세로 (90도)
+  # -p grasp_yaw:=horizontal          # 가로 (0도)
+  # -p grasp_yaw:=45                  # 특정 각도
+```
+
+## 데이터 수집용 토픽
+
+녹화/재생 호환을 위해 gripper 값이 **실제 로봇 스케일**로 변환된 토픽이 별도 제공됩니다:
+
+| 토픽 | 스케일 | 용도 |
+|---|---|---|
+| `/simulation/joint_states` | sim (0~0.035) | IsaacSim 내부 |
+| `/simulation/joint_command` | sim (0~0.035) | IsaacSim 명령 |
+| `/joint_states` | **real (0~0.085)** | 데이터 수집/재생 |
+| `/joint_command` | **real (0~0.085)** | 데이터 수집/재생 |
+
+## 도메인 랜덤화
+
+`setup_scene()`에서 설정:
+
+```python
+# 카메라 위치/방향 랜덤화 (기준점 ± delta)
+self.add_camera(position=[0.4, 1.2, 1.6], orientation=[38, 1, 173],
+                position_delta=[0.08, 0.05, 0.05],
+                orientation_delta=[2, 2, 5],
+                focal_length=13.0)  # 광각
+
+# 조명 랜덤화
+self.set_lighting_randomization(
+    intensity_range=[800, 2500],
+    color_temp_range=[3500, 6500],
+    additional_lights=2)
+
+# 배경(바닥) 색상 랜덤화 (흑백)
+self.set_background_randomization(brightness_range=[0.0, 0.3])
+
+# 오브젝트 위치 + 방향 랜덤화
+self.add_object("RedCube", size=0.05, shape="cube",
+                position_range=[[0.2, -0.18, 0.052], [0.40, 0, 0.052]],
+                orientation_range=[[0, 0, -45], [0, 0, 45]])
+```
+
+## 프로젝트 구조 상세
+
+자세한 구현 설명은 각 모듈의 CLAUDE.md 참고:
+- `ros2_env/CLAUDE.md` — 시뮬레이션 환경 프레임워크
+- `isaac_control_core/CLAUDE.md` — 모션 컨트롤러 추상화 + 태스크
+- `curobo/CLAUDE.md` — cuRobo 컨트롤러 구현 세부사항
+
+## Swap 설정 (VRAM 부족 시)
+
+```bash
 sudo swapoff -a
 sudo fallocate -l 30G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
 ```
-```
-./isaaclab.sh -s -- \
-  --/renderer/resolution/width=640 \
-  --/renderer/resolution/height=480 \
-  --/rtx/rendermode="RasterizedLighting" 
-```
-```
-compressed 이미지 퍼블리시:
-apt-get update && apt-get install -y ros-${ROS_DISTRO}-image-transport-plugins
-ros2 run image_transport republish raw compressed \
---ros-args \
---remap in:=/simulation/camera_rgb \
---remap out:=/output/camera_compressed
-```
-```
-export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libspdlog.so.1.9.2
-ros2 topic list
-```
-```
-docker pull moveit/moveit2:main-humble-tutorial-source
-```
-```
-docker build --no-cache -t moveit2-isaac:latest .
-```
-```
-ros2 service call /pick_and_place std_srvs/srv/Trigger
-```
+
+## License
+
+BSD-3 License. See [LICENSE](LICENSE) for details.
