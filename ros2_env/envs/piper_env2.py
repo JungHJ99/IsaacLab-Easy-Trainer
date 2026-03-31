@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ros2_env.base_env import BaseEnv
 
 # Piper URDF/메쉬 경로
-PIPER_PKG = Path(__file__).resolve().parents[2] / "moveit/ws/src/piper_ros/src/piper_description"
+PIPER_PKG = Path(__file__).resolve().parents[2] / "ros_pkgs/piper_description"
 PIPER_URDF = str(PIPER_PKG / "urdf/piper_description.urdf")
 PIPER_MESHES = str(PIPER_PKG / "meshes")
 

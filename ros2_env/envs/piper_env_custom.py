@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ros2_env.base_env import BaseEnv
 
 # Piper URDF/메쉬 경로
-PIPER_PKG = Path(__file__).resolve().parents[2] / "moveit/ws/src/piper_ros/src/piper_description"
+PIPER_PKG = Path(__file__).resolve().parents[2] / "ros_pkgs/piper_description"
 PIPER_URDF = str(PIPER_PKG / "urdf/piper_description.urdf")
 
 # Custom USD 경로
@@ -67,7 +67,7 @@ class PiperEnvCustom(BaseEnv):
 
         # GreyCube — 큐브 범위 안
         self.add_object("GreyCube", usd_path=str(USD_DIR / "grey_cube.usd"), size=0.08, scale=0.5,
-                        position_range=[[0.18, -0.18, 0.052], [0.43, 0.18, 0.052]])
+                        position_range=[[0.18, -0.18, 0.052], [0.43, 0.18, 0.052]], color=(0.1, 0.1, 0.1))
 
         # Mouse, Keyboard — 테이블 위, 큐브 범위 바깥 (x=0.50~0.75)
         self.add_object("Mouse", usd_path=str(USD_DIR / "mouse.usd"), size=0.1, scale=0.5,
@@ -83,12 +83,14 @@ class PiperEnvCustom(BaseEnv):
         self.add_bg_object("Clamp_bg", usd_path=str(USD_DIR / "clamp_for_robot.usd"),
                            position=(-0.108, 0.00741, -0.02808), orientation=(-25.213, -75.653, -117.797), scale=0.6)
         self.add_bg_object("GreyShelf", box_size=(0.3, 0.24, 0.02),
-                           position=(0.00943, -0.003, 0.0272), color=(0.6, 0.6, 0.6))
+                           position=(0.00943, -0.003, 0.0272))
 
         # 고정 카메라 (외부 시점)
         self.add_camera(
             position=[0.40257, 1.20247, 1.60051],
             orientation=[37.97461, 1.0, 173.42998],
+            position_delta=[0.08, 0.05, 0.05],
+            orientation_delta=[2.0, 2.0, 5.0],
             name="external_cam",
         )
 
@@ -98,6 +100,14 @@ class PiperEnvCustom(BaseEnv):
             orientation=[114, 0, -90],
             parent_prim="/piper/gripper_base",
             name="wrist_cam",
+        )
+
+        # 조명 도메인 랜덤화
+        self.set_lighting_randomization(
+            intensity_range=[800, 2500],
+            color_temp_range=[3500, 6500],
+            additional_lights=2,
+            additional_intensity_range=[200, 800],
         )
 
 

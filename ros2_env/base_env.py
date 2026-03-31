@@ -41,6 +41,8 @@ class BaseEnv:
         self._mimic_joints = []  # (source_joint_prim, target_joint_prim, multiplier, offset)
         self._mimic_joint_names = {}  # {mimic_name: (source_name, multiplier, offset)}
         self._relay_node = None
+        self._lighting_randomization = None  # dict: intensity_range, color_temp_range 등
+        self._background_randomization = None
 
     def _setup_rendering(self):
         import carb
@@ -356,13 +358,15 @@ class BaseEnv:
                                           spawn_range=spawn_range)
 
     def add_object(self, name: str, size: float = 0.06,
-                   color: tuple = (1.0, 0.3, 0.2), shape: str = "cube",
+                   color: tuple | None = None, shape: str = "cube",
                    height: float | None = None,
                    usd_path: str | None = None, scale: float = 1.0,
                    position_range: list | None = None,
                    orientation_range: list | None = None,
                    deformable: float | None = None,
-                   collision_approximation: str = "convexHull"):
+                   collision_approximation: str = "convexHull",
+                   friction: float = 1.0,
+                   mass: float | None = None):
         """테이블 위 오브젝트를 추가 (add_table 이후 호출).
 
         프리미티브: add_object("Cube", size=0.05, shape="cube")
@@ -372,16 +376,14 @@ class BaseEnv:
         orientation_range: [[rx_min, ry_min, rz_min], [rx_max, ry_max, rz_max]] 도 단위.
         deformable: 0.0~1.0 부드러움 정도. 0.0=매우 부드러움, 1.0=단단함. None이면 rigid body.
         collision_approximation: 충돌 근사 방식.
-            "convexHull" (기본) - 볼록 외곽선, 빠름
-            "convexDecomposition" - 볼록 분해, 오목한 형상 지원
-            "meshSimplification" - 메쉬 단순화
-            "none" - 트라이앵글 메쉬 그대로 사용 (가장 정확, 느림)
+        friction: 마찰 계수 (기본 1.0). 잡기 어려운 물체는 2.0~5.0으로 높이기.
+        mass: 질량 (kg). None이면 자동 계산. 가벼울수록 잡기 쉬움.
         """
         if self._obj_manager is None:
             raise RuntimeError("add_table()을 먼저 호출하세요.")
         self._obj_manager.add_object(name, size, color, shape, height, usd_path, scale,
                                      position_range, orientation_range, deformable,
-                                     collision_approximation)
+                                     collision_approximation, friction, mass)
 
     def add_bg_object(self, name: str, usd_path: str | None = None,
                       position: tuple = (0.0, 0.0, 0.0),
@@ -406,15 +408,32 @@ class BaseEnv:
                    publish_pointcloud: bool = False,
                    parent_prim: str | None = None,
                    name: str | None = None,
-                   near_plane: float = 0.01):
+                   near_plane: float = 0.01,
+                   focal_length: float | None = None,
+                   position_delta: list | None = None,
+                   orientation_delta: list | None = None):
         """카메라를 추가.
 
         orientation: [roll, pitch, yaw] 도 단위. None이면 회전 없음.
-                     지정 시 transform matrix로 적용.
         parent_prim: 로봇 링크 경로 (예: "/piper/link6"). 지정 시 해당 링크에 부착.
         name: 카메라 이름. None이면 자동 생성.
+        focal_length: 초점 거리 (mm). 작을수록 광각. 기본 24mm (IsaacSim 기본).
+                      예: 5.0=초광각(~120도), 10.0=광각(~90도), 24.0=일반, 50.0=망원.
+        position_delta: [dx, dy, dz]. position 기준 ±delta 범위 내 랜덤.
+        orientation_delta: [droll, dpitch, dyaw]. orientation 기준 ±delta 범위 내 랜덤. 도 단위.
         """
+        import random
         from isaacsim.sensors.camera import Camera
+
+        # position_delta가 있으면 base position에서 ±delta 랜덤
+        if position_delta is not None:
+            position = [position[i] + random.uniform(-position_delta[i], position_delta[i])
+                        for i in range(3)]
+
+        # orientation_delta가 있으면 base orientation에서 ±delta 랜덤
+        if orientation_delta is not None and orientation is not None:
+            orientation = [orientation[i] + random.uniform(-orientation_delta[i], orientation_delta[i])
+                           for i in range(3)]
 
         cam_name = name or f"camera_{len(self._cameras)}"
         if parent_prim is not None:
@@ -438,9 +457,11 @@ class BaseEnv:
         if orientation is not None:
             xform.AddRotateXYZOp().Set(Gf.Vec3f(*orientation))
 
-        # near clipping plane 설정
+        # 카메라 속성 설정
         cam_prim = UsdGeom.Camera(prim)
         cam_prim.CreateClippingRangeAttr().Set(Gf.Vec2f(near_plane, 1000000.0))
+        if focal_length is not None:
+            cam_prim.CreateFocalLengthAttr().Set(focal_length)
 
         self._cameras.append({
             "camera": camera,
@@ -448,7 +469,163 @@ class BaseEnv:
             "rgb": publish_rgb,
             "depth": publish_depth,
             "pointcloud": publish_pointcloud,
+            "prim_path": camera_path,
+            "base_position": list(position) if position_delta else None,
+            "position_delta": position_delta,
+            "base_orientation": list(orientation) if (orientation_delta and orientation) else None,
+            "orientation_delta": orientation_delta,
         })
+
+    def _randomize_cameras(self):
+        """position_delta/orientation_delta가 설정된 카메라의 위치를 랜덤화."""
+        import random
+        from pxr import Gf, UsdGeom
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+
+        for cam_info in self._cameras:
+            base_pos = cam_info.get("base_position")
+            pos_delta = cam_info.get("position_delta")
+            base_ori = cam_info.get("base_orientation")
+            ori_delta = cam_info.get("orientation_delta")
+
+            if pos_delta is None and ori_delta is None:
+                continue
+
+            prim = stage.GetPrimAtPath(cam_info["prim_path"])
+            if not prim.IsValid():
+                continue
+            xform = UsdGeom.Xformable(prim)
+
+            if pos_delta is not None and base_pos is not None:
+                new_pos = [base_pos[i] + random.uniform(-pos_delta[i], pos_delta[i])
+                           for i in range(3)]
+                for op in xform.GetOrderedXformOps():
+                    if op.GetOpName() == "xformOp:translate":
+                        op.Set(Gf.Vec3d(*new_pos))
+                        break
+
+            if ori_delta is not None and base_ori is not None:
+                new_ori = [base_ori[i] + random.uniform(-ori_delta[i], ori_delta[i])
+                           for i in range(3)]
+                for op in xform.GetOrderedXformOps():
+                    if op.GetOpName() == "xformOp:rotateXYZ":
+                        op.Set(Gf.Vec3f(*new_ori))
+                        break
+
+    def set_lighting_randomization(self,
+                                   intensity_range: list | None = None,
+                                   color_temp_range: list | None = None,
+                                   additional_lights: int = 0,
+                                   additional_intensity_range: list | None = None):
+        """리셋 시 조명 랜덤화 설정.
+
+        Args:
+            intensity_range: DomeLight intensity [min, max]. 예: [800, 2500].
+            color_temp_range: 색온도 [min, max] Kelvin. 예: [3500, 6500].
+                              3500=따뜻한 노란빛, 6500=차가운 흰빛.
+            additional_lights: 추가 DistantLight 개수 (랜덤 방향). 0이면 DomeLight만.
+            additional_intensity_range: 추가 조명 intensity [min, max]. 예: [200, 800].
+        """
+        self._lighting_randomization = {
+            "intensity_range": intensity_range or [1000, 2000],
+            "color_temp_range": color_temp_range,
+            "additional_lights": additional_lights,
+            "additional_intensity_range": additional_intensity_range or [200, 800],
+        }
+
+    def _randomize_lighting(self):
+        """리셋 시 조명 랜덤화 실행."""
+        if self._lighting_randomization is None:
+            return
+
+        import random
+        from pxr import UsdLux
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+
+        cfg = self._lighting_randomization
+
+        # DomeLight intensity 랜덤화
+        dome = stage.GetPrimAtPath("/World/DomeLight")
+        if dome.IsValid():
+            lo, hi = cfg["intensity_range"]
+            intensity = random.uniform(lo, hi)
+            dome.GetAttribute("inputs:intensity").Set(intensity)
+
+            # 색온도 랜덤화
+            if cfg["color_temp_range"] is not None:
+                lo_t, hi_t = cfg["color_temp_range"]
+                temp = random.uniform(lo_t, hi_t)
+                dome.GetAttribute("inputs:enableColorTemperature").Set(True)
+                dome.GetAttribute("inputs:colorTemperature").Set(temp)
+
+        # 추가 DistantLight 랜덤화 (방향 + intensity)
+        n_lights = cfg["additional_lights"]
+        if n_lights > 0:
+            from pxr import Gf, UsdGeom
+            int_lo, int_hi = cfg["additional_intensity_range"]
+
+            for i in range(n_lights):
+                light_path = f"/World/RandomLight_{i}"
+                light_prim = stage.GetPrimAtPath(light_path)
+
+                if not light_prim.IsValid():
+                    # 첫 리셋 시 생성
+                    light_prim = UsdLux.DistantLight.Define(stage, light_path).GetPrim()
+
+                light_prim.GetAttribute("inputs:intensity").Set(
+                    random.uniform(int_lo, int_hi)
+                )
+
+                xform = UsdGeom.Xformable(light_prim)
+                xform.ClearXformOpOrder()
+                xform.AddRotateXYZOp().Set(Gf.Vec3f(
+                    random.uniform(-60, 60),
+                    random.uniform(-60, 60),
+                    random.uniform(0, 360),
+                ))
+
+    def set_background_randomization(self, brightness_range: list | None = None):
+        """리셋 시 배경(바닥+DomeLight) 색상을 랜덤 흑백으로 변경.
+
+        Args:
+            brightness_range: [min, max] 0~1 범위. 예: [0.0, 0.3]=검정~진한회색.
+                              None이면 비활성화.
+        """
+        self._background_randomization = brightness_range
+
+    def _randomize_background(self):
+        """배경색을 brightness_range 범위 내 랜덤 흑백으로 변경."""
+        if self._background_randomization is None:
+            return
+
+        import random
+        from pxr import Gf, Sdf, UsdLux
+        import omni.usd
+        stage = omni.usd.get_context().get_stage()
+
+        lo, hi = self._background_randomization
+        v = random.uniform(lo, hi)
+
+        # 1) DomeLight color 변경
+        for prim in stage.Traverse():
+            if prim.IsA(UsdLux.DomeLight):
+                tex_attr = prim.GetAttribute("inputs:texture:file")
+                if tex_attr and tex_attr.Get():
+                    tex_attr.Set(Sdf.AssetPath(""))
+                color_attr = prim.GetAttribute("inputs:color")
+                if color_attr:
+                    color_attr.Set(Gf.Vec3f(v, v, v))
+
+        # 2) 커스텀 바닥 셰이더 색상 변경
+        shader = stage.GetPrimAtPath("/World/BackgroundFloor/Material/Shader")
+        if shader.IsValid():
+            from pxr import UsdShade
+            s = UsdShade.Shader(shader)
+            dc = s.GetInput("diffuseColor")
+            if dc:
+                dc.Set(Gf.Vec3f(v, v, v))
 
     def setup_scene(self):
         """서브클래스에서 오버라이드: 로봇, 테이블, 오브젝트, 카메라를 배치."""
@@ -462,7 +639,28 @@ class BaseEnv:
         import omni.kit.commands
 
         world = World(stage_units_in_meters=1.0)
-        world.scene.add_ground_plane()
+
+        # 커스텀 바닥 (색상 변경 가능) + 물리 충돌면
+        import omni.usd
+        from pxr import UsdGeom, UsdPhysics, Gf
+        _stage = omni.usd.get_context().get_stage()
+
+        floor = UsdGeom.Cube.Define(_stage, "/World/BackgroundFloor")
+        floor.GetSizeAttr().Set(1.0)
+        xf = UsdGeom.Xformable(floor.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(0, 0, -0.251))
+        xf.AddScaleOp().Set(Gf.Vec3d(20, 20, 0.5))
+        # 물리 충돌 (ground plane 대체)
+        UsdPhysics.CollisionAPI.Apply(floor.GetPrim())
+        # OmniPBR 머티리얼 (RTX 렌더러에서 색상 변경 가능)
+        from pxr import UsdShade, Sdf
+        mat = UsdShade.Material.Define(_stage, "/World/BackgroundFloor/Material")
+        shader = UsdShade.Shader.Define(_stage, "/World/BackgroundFloor/Material/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.3, 0.3, 0.3))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.9)
+        mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(floor.GetPrim()).Bind(mat)
 
         # 조명
         omni.kit.commands.execute(
@@ -484,6 +682,10 @@ class BaseEnv:
         # 오브젝트 랜덤 배치
         if self._obj_manager:
             self._obj_manager.randomize_all()
+
+        # 초기 도메인 랜덤화
+        self._randomize_lighting()
+        self._randomize_background()
 
         # 카메라 초기화
         for cam_info in self._cameras:
@@ -542,6 +744,9 @@ class BaseEnv:
                 print("[INFO] 환경 리셋 중 (오브젝트만, 로봇 포즈 유지)...")
                 if self._obj_manager:
                     self._obj_manager.randomize_all()
+                self._randomize_cameras()
+                self._randomize_lighting()
+                self._randomize_background()
                 for _ in range(15):
                     world.step(render=True)
                 self._reset_requested = False

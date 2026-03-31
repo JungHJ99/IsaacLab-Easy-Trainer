@@ -6,15 +6,17 @@ MoveIt2 + IsaacSim 연동을 위한 ROS2 패키지.
 ## Architecture
 
 ```
-core/                          # 추상화 레이어 (로봇 무관)
-  robot.py                     #   RobotConfig, GripperConfig (ABC/dataclass)
-  bridge.py                    #   TrajectoryBridge (MoveIt ↔ IsaacSim 중간 브릿지)
-  controller.py                #   RobotController (MoveGroup/Cartesian/Gripper 통합)
-  task.py                      #   BaseTask (validate → execute → evaluate 파이프라인)
+# 공통 코드는 isaac_control_core 패키지로 분리됨 (symlink 참조)
+# → RobotConfig, MotionController, BaseTask, Tasks, Skills, PiperConfig 등
 
-robots/                        # 로봇별 구현
-  franka.py, franka_bridge.py  #   Franka Panda (7DOF + 2-finger gripper)
-  piper.py,  piper_bridge.py   #   Piper (6DOF + parallel-jaw, joint8 mimic)
+core/                          # MoveIt 전용
+  controller.py                #   MoveItController (MoveGroup/Cartesian) + RobotController alias
+  bridge.py                    #   TrajectoryBridge (MoveIt ↔ IsaacSim 중간 브릿지)
+  __init__.py                  #   isaac_control_core 공통 모듈 re-export
+
+robots/                        # MoveIt 전용 Bridge 구현
+  franka_bridge.py             #   FrankaTrajectoryBridge
+  piper_bridge.py              #   PiperTrajectoryBridge (그리퍼 sim↔real 스케일링 포함)
 
 tasks/
   pick_and_place.py            # PickAndPlaceTask (RobotSkills 기반)
@@ -63,6 +65,27 @@ config/
 
 선택 속성:
 - `grasp_orientation` → (x, y, z, w) 쿼터니언. None이면 자유 자세.
+
+### MotionController (motion_controller.py)
+모든 모션 플래너의 추상 베이스 클래스. ROS2 Node를 상속하며 공통 기능 제공.
+
+공통 기능 (구현 완료):
+- TF buffer (EE orientation 조회)
+- joint_states 구독 + 오브젝트 마커 추적
+- `wait_for_ready()` = `_wait_for_planner()` + joint_states 대기 + 오브젝트 대기
+
+서브클래스 구현 필수 (abstract):
+- `_wait_for_planner()` - 플래너별 서버/서비스 대기
+- `move_to_joint(dict)` - 관절 공간 이동
+- `move_to_pose(x,y,z, ox,oy,oz,ow)` - 포즈 이동
+- `move_linear(x,y,z, ox,oy,oz,ow)` - 직선 이동
+- `set_gripper(width)` - 그리퍼 제어
+
+구현체:
+- `MoveItController` (controller.py) - MoveGroup + Cartesian path
+- `CuroboController` (curobo_control 패키지) - cuRobo MotionGen
+
+`RobotController`는 `MoveItController`의 하위호환 alias.
 
 ### TrajectoryBridge (bridge.py)
 MoveIt FollowJointTrajectory 액션 → IsaacSim joint_command 토픽 변환.

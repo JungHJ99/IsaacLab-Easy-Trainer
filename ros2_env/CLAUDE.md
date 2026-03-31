@@ -39,7 +39,10 @@ add_object("Basket", usd_path="/path/to.usd", size=0.2, scale=0.5,
            collision_approximation="convexDecomposition")  # 오목한 형상
 
 add_camera(position=[1.8, 0, 1.6], orientation=[0, 40, 180],
-           publish_rgb=True, publish_depth=False)
+           publish_rgb=True, publish_depth=False,
+           position_delta=[0.1, 0.1, 0.05],    # ±offset 랜덤화
+           orientation_delta=[5, 5, 0],         # ±deg 랜덤화
+           focal_length=10)                      # 5=ultra-wide, 10=wide, 24=normal, 50=telephoto
 ```
 
 ### URDF 임포트 (add_robot_from_urdf)
@@ -83,12 +86,17 @@ add_table(center=[0.18, 0, 0.012], scale=[0.6, 0.5, 0.04],
 
 ```python
 add_object("Name", size=0.06, shape="cube", color=(1, 0, 0))  # 프리미티브
+add_object("Name", size=0.06, shape="cube", color=(1, 0, 0),
+           orientation_range=[[0,0,0],[0,0,180]])              # 프리미티브도 orientation_range 지원
 add_object("Name", usd_path="...", size=0.1, scale=0.5)       # USD 에셋
 add_object("Name", usd_path="...", size=0.1, scale=0.5,
            position_range=[[x_min, y_min, z], [x_max, y_max, z]])  # 개별 배치 범위
 add_object("Name", usd_path="...", size=0.1, scale=0.5,
            collision_approximation="convexDecomposition")  # 충돌 근사 방식
 ```
+
+**orientation_range**: 프리미티브(cube/sphere/cylinder) 오브젝트에서도 지원 (이전에는 USD 오브젝트 전용).
+`[[roll_min, pitch_min, yaw_min], [roll_max, pitch_max, yaw_max]]` (도 단위)
 
 **collision_approximation** 옵션:
 - `"convexHull"` (기본) - 볼록 외곽선, 빠름. 일반 물체용.
@@ -156,6 +164,13 @@ ROS2 퍼블리셔 설정 → 리셋 서비스 설정 → mimic relay 설정 →
 - `setup_marker_publisher(robot_prim_path)` 호출 시 rclpy.init() + 노드 생성
 - **frame_id**: "panda_link0"으로 하드코딩 (실제 위치 계산에는 영향 없음, 표시용)
 
+#### 마커 orientation 계산 (objects.py)
+
+마커에 실제 오브젝트 orientation 포함 (이전의 hardcoded `w=1.0` 방식 폐기):
+- `inv_base_tf * world_tf`로 로봇 base 기준 상대 orientation 계산
+- 결과를 quaternion xyzw로 마커 메시지에 포함
+- `MotionController.object_orientations`로 컨트롤러 측에서 조회 가능
+
 ## ros2_bridge.py (OmniGraph 설정)
 
 네임스페이스: `NS = "/simulation"`
@@ -219,7 +234,13 @@ class PiperEnvCustom(BaseEnv):
 # IsaacSim Docker 컨테이너 내부
 /workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/piper_env1.py
 /workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/piper_env_custom.py
+
+# headless 모드 (렌더링 없이 실행)
+/workspace/isaaclab/_isaac_sim/python.sh ros2_env/envs/piper_env_custom.py --headless
 ```
+
+`--headless` CLI 플래그: `pi0_env.py` 및 `piper_env_custom.py`에서 지원.
+`argparse`로 파싱하여 `SimulationApp({"headless": True})`로 전달.
 
 ## 중요 구현 세부사항
 
@@ -233,3 +254,8 @@ class PiperEnvCustom(BaseEnv):
 - **로봇 위치와 오브젝트 z 정렬**: 로봇 base z = 테이블 표면 z로 맞추고,
   position_range z = 테이블 표면 z + 오브젝트 반높이로 설정해야 MoveIt 플래닝이 성공한다.
   로봇을 원점(0,0)에서 벗어나게 배치할 경우, position_range의 XY도 로봇 도달 범위 내로 조정 필요.
+- **카메라 랜덤화 (position_delta / orientation_delta)**: `position_range` / `orientation_range` 방식에서
+  기준 위치로부터 ±offset으로 샘플링하는 `position_delta` / `orientation_delta` 방식으로 변경.
+- **배경 랜덤화**: 기본 `ground_plane` 대신 Custom `BackgroundFloor` + OmniPBR material 사용.
+  `DisplayColorAttr`은 RTX renderer에서 동작하지 않으므로 OmniPBR이 필수.
+  `set_background_randomization()`으로 DomeLight grayscale 색상 랜덤화 + texture 제거.

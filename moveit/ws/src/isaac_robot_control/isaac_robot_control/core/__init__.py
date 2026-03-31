@@ -1,6 +1,11 @@
-from .robot import RobotConfig, GripperConfig
-from .bridge import TrajectoryBridge
-from .controller import RobotController
-from .task import BaseTask
+# 공통 모듈은 isaac_control_core에서 re-export
+from isaac_control_core.core import RobotConfig, GripperConfig, MotionController, BaseTask
 
-__all__ = ["RobotConfig", "GripperConfig", "TrajectoryBridge", "RobotController", "BaseTask"]
+# MoveIt 전용
+from .controller import MoveItController, RobotController
+from .bridge import TrajectoryBridge
+
+__all__ = [
+    "RobotConfig", "GripperConfig", "MotionController", "BaseTask",
+    "MoveItController", "RobotController", "TrajectoryBridge",
+]

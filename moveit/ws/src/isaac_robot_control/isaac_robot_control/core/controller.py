@@ -1,6 +1,6 @@
-"""범용 로봇 컨트롤러 노드.
+"""MoveIt 기반 로봇 컨트롤러.
 
-RobotConfig를 주입받아 MoveGroup, Cartesian, 그리퍼 제어를 수행합니다.
+MotionController를 상속하여 MoveGroup, Cartesian, 그리퍼 제어를 수행합니다.
 어떤 로봇이든 RobotConfig만 구현하면 동일한 컨트롤러를 재사용할 수 있습니다.
 """
 
@@ -8,9 +8,7 @@ import copy
 import time
 
 import rclpy
-from rclpy.node import Node
 from rclpy.action import ActionClient
-from rclpy.callback_groups import ReentrantCallbackGroup
 
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
@@ -22,19 +20,16 @@ from moveit_msgs.msg import (
 )
 from moveit_msgs.srv import GetCartesianPath
 from geometry_msgs.msg import Pose
-from sensor_msgs.msg import JointState
-from visualization_msgs.msg import Marker
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
-from tf2_ros import Buffer
-from tf2_msgs.msg import TFMessage
 
-from isaac_robot_control.core.robot import RobotConfig
+from isaac_control_core.core.robot import RobotConfig
+from isaac_control_core.core.motion_controller import MotionController
 
 
-class RobotController(Node):
-    """범용 로봇 컨트롤러.
+class MoveItController(MotionController):
+    """MoveIt 기반 모션 컨트롤러.
 
     Args:
         robot_config: 로봇 설정 (관절 이름, 토픽, 프레임 등).
@@ -48,10 +43,7 @@ class RobotController(Node):
         object_names: list[str] | None = None,
         node_name: str = "robot_controller",
     ):
-        super().__init__(node_name)
-        self._robot_config = robot_config
-
-        self._cb_group = ReentrantCallbackGroup()
+        super().__init__(robot_config, object_names, node_name)
 
         # MoveGroup 액션 클라이언트
         self._move_group_client = ActionClient(self, MoveGroup, "/move_action")
@@ -73,60 +65,10 @@ class RobotController(Node):
             GetCartesianPath, "/compute_cartesian_path",
         )
 
-        # TF 리스너 (현재 EE 자세 조회용) — /simulation/tf 구독
-        self._tf_buffer = Buffer()
-        self.create_subscription(
-            TFMessage, "/simulation/tf",
-            lambda msg: [self._tf_buffer.set_transform(t, "simulation") for t in msg.transforms],
-            10, callback_group=self._cb_group,
-        )
-        self.create_subscription(
-            TFMessage, "/simulation/tf_static",
-            lambda msg: [self._tf_buffer.set_transform_static(t, "simulation") for t in msg.transforms],
-            10, callback_group=self._cb_group,
-        )
+    # ── 플래너 대기 ───────────────────────────────────────────
 
-        # 현재 관절 상태
-        self._current_joint_state = None
-        self.create_subscription(
-            JointState, "/simulation/joint_states", self._joint_state_cb, 10,
-            callback_group=self._cb_group,
-        )
-
-        # 오브젝트 위치 (Marker 구독)
-        self._object_positions: dict[str, tuple[float, float, float]] = {}
-        for name in (object_names or []):
-            self.create_subscription(
-                Marker, f"/simulation/object_markers/{name}", self._marker_cb, 10,
-                callback_group=self._cb_group,
-            )
-
-        self._tracked_objects = list(object_names or [])
-
-    @property
-    def robot_config(self) -> RobotConfig:
-        return self._robot_config
-
-    @property
-    def object_positions(self) -> dict[str, tuple[float, float, float]]:
-        return self._object_positions
-
-    # ── 콜백 ──────────────────────────────────────────────────
-
-    def _joint_state_cb(self, msg: JointState):
-        self._current_joint_state = msg
-
-    def _marker_cb(self, msg: Marker):
-        self._object_positions[msg.ns] = (
-            msg.pose.position.x,
-            msg.pose.position.y,
-            msg.pose.position.z,
-        )
-
-    # ── 대기 ──────────────────────────────────────────────────
-
-    def wait_for_ready(self):
-        """모든 필요한 데이터가 수신될 때까지 대기."""
+    def _wait_for_planner(self):
+        """MoveIt 서버/서비스 대기."""
         self.get_logger().info("MoveGroup 액션 서버 대기 중...")
         self._move_group_client.wait_for_server()
         self.get_logger().info("Arm trajectory 서버 대기 중...")
@@ -135,52 +77,6 @@ class RobotController(Node):
         self._gripper_client.wait_for_server()
         self.get_logger().info("Cartesian path 서비스 대기 중...")
         self._cartesian_client.wait_for_service()
-
-        self.get_logger().info("joint_states 대기 중...")
-        while self._current_joint_state is None:
-            rclpy.spin_once(self, timeout_sec=0.5)
-
-        # 현재 관절 상태 출력 (bounds 디버그)
-        js = self._current_joint_state
-        for i, name in enumerate(js.name):
-            self.get_logger().info(f"  [joint_state] {name} = {js.position[i]:.6f}")
-
-        if self._tracked_objects:
-            self.get_logger().info(
-                f"오브젝트 위치 대기 중 ({', '.join(self._tracked_objects)})..."
-            )
-            while not all(
-                name in self._object_positions for name in self._tracked_objects
-            ):
-                rclpy.spin_once(self, timeout_sec=0.5)
-
-            for name in self._tracked_objects:
-                self.get_logger().info(f"  {name} 위치: {self._object_positions[name]}")
-
-        self.get_logger().info("모든 준비 완료!")
-
-    # ── 관절 상태 헬퍼 ────────────────────────────────────────
-
-    def _get_arm_positions(self) -> list[float]:
-        """현재 arm 관절 위치를 순서대로 반환."""
-        js = self._current_joint_state
-        pos_map = {js.name[i]: js.position[i] for i in range(len(js.name))}
-        return [pos_map.get(n, 0.0) for n in self._robot_config.arm_joint_names]
-
-    def get_current_ee_orientation(self) -> tuple[float, float, float, float] | None:
-        """TF에서 현재 EE 프레임의 orientation (x, y, z, w)을 조회."""
-        try:
-            t = self._tf_buffer.lookup_transform(
-                self._robot_config.base_frame,
-                self._robot_config.ee_frame,
-                rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=1.0),
-            )
-            q = t.transform.rotation
-            return (q.x, q.y, q.z, q.w)
-        except Exception as e:
-            self.get_logger().warn(f"EE orientation 조회 실패: {e}")
-            return None
 
     # ── MoveGroup (자유 공간 이동) ─────────────────────────────
 
@@ -216,11 +112,7 @@ class RobotController(Node):
         ox: float | None = None, oy: float | None = None,
         oz: float | None = None, ow: float | None = None,
     ) -> bool:
-        """포즈 목표로 이동 (Cartesian 우선, 실패 시 MoveGroup 폴백).
-
-        orientation을 지정하지 않으면 현재 EE orientation을 유지합니다.
-        """
-        # orientation 미지정 시 현재 EE 자세 사용
+        """포즈 목표로 이동 (Cartesian 우선, 실패 시 MoveGroup 폴백)."""
         if ox is None:
             current_ori = self.get_current_ee_orientation()
             if current_ori:
@@ -233,13 +125,6 @@ class RobotController(Node):
             ow = ow or 0.0
 
         self.get_logger().info(f"포즈 이동: ({x:.3f}, {y:.3f}, {z:.3f})")
-
-        # [DEBUG] Cartesian 시도 전 joint state 스냅샷
-        js_before = self._current_joint_state
-        self.get_logger().info(
-            f"[DEBUG] move_to_pose 시작 joint_state: "
-            f"{dict(zip(js_before.name, [f'{p:.6f}' for p in js_before.position]))}"
-        )
 
         target = Pose()
         target.position.x = x
@@ -254,35 +139,92 @@ class RobotController(Node):
         if success:
             return True
 
-        # [DEBUG] MoveGroup 폴백 전 joint state 스냅샷
-        js_after = self._current_joint_state
         self.get_logger().warn("Cartesian 실패, MoveGroup으로 폴백")
-        self.get_logger().info(
-            f"[DEBUG] 폴백 직전 joint_state: "
-            f"{dict(zip(js_after.name, [f'{p:.6f}' for p in js_after.position]))}"
-        )
-        # joint state 변화량 출력
-        if js_before and js_after and len(js_before.position) == len(js_after.position):
-            diffs = [abs(a - b) for a, b in zip(js_before.position, js_after.position)]
-            max_diff = max(diffs)
-            max_idx = diffs.index(max_diff)
-            self.get_logger().info(
-                f"[DEBUG] joint state 변화 최대: {js_before.name[max_idx]} = {max_diff:.6f} rad"
-            )
-
         return self._move_with_movegroup(x, y, z, ox, oy, oz, ow)
+
+    def move_linear(
+        self, x: float, y: float, z: float,
+        ox: float | None = None, oy: float | None = None,
+        oz: float | None = None, ow: float | None = None,
+        velocity_scaling: float = 0.3,
+        acceleration_scaling: float = 0.3,
+    ) -> bool:
+        """Cartesian 직선 경로로 이동."""
+        if ox is None:
+            current_ori = self.get_current_ee_orientation()
+            if current_ori:
+                ox, oy, oz, ow = current_ori
+                self.get_logger().info(
+                    f"직선 이동 (Cartesian): ({x:.3f}, {y:.3f}, {z:.3f}), "
+                    f"현재 자세 유지 quat=({ox:.3f}, {oy:.3f}, {oz:.3f}, {ow:.3f})"
+                )
+            else:
+                ox, oy, oz, ow = 1.0, 0.0, 0.0, 0.0
+                self.get_logger().info(f"직선 이동 (Cartesian): ({x:.3f}, {y:.3f}, {z:.3f}), 기본 자세")
+        else:
+            oy = oy or 0.0
+            oz = oz or 0.0
+            ow = ow or 0.0
+            self.get_logger().info(f"직선 이동 (Cartesian): ({x:.3f}, {y:.3f}, {z:.3f})")
+
+        target = Pose()
+        target.position.x = x
+        target.position.y = y
+        target.position.z = z
+        target.orientation.x = ox
+        target.orientation.y = oy
+        target.orientation.z = oz
+        target.orientation.w = ow
+
+        return self._move_cartesian(
+            [target],
+            velocity_scaling=velocity_scaling,
+            acceleration_scaling=acceleration_scaling,
+        )
+
+    def set_gripper(self, width: float) -> bool:
+        """그리퍼를 지정 너비로 이동."""
+        self.get_logger().info(f"그리퍼: {'열기' if width > 0.02 else '닫기'} ({width:.4f})")
+
+        gripper_cfg = self._robot_config.gripper
+
+        goal = FollowJointTrajectory.Goal()
+        trajectory = JointTrajectory()
+        trajectory.joint_names = gripper_cfg.joint_names
+
+        point = JointTrajectoryPoint()
+        point.positions = [width] * len(gripper_cfg.joint_names)
+        point.time_from_start = Duration(sec=1, nanosec=0)
+        trajectory.points.append(point)
+
+        goal.trajectory = trajectory
+
+        future = self._gripper_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, future)
+        goal_handle = future.result()
+
+        if not goal_handle.accepted:
+            self.get_logger().error("그리퍼 목표 거부됨!")
+            return False
+
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+        result = result_future.result()
+
+        if result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL:
+            self.get_logger().info("그리퍼 완료!")
+            return True
+        else:
+            self.get_logger().warn(f"그리퍼 결과: {result.result.error_code}")
+            return True  # 물체에 막혀도 성공 처리
+
+    # ── MoveIt 내부 메서드 ────────────────────────────────────
 
     def _move_with_movegroup(
         self, x, y, z, ox, oy, oz, ow,
         orientation_tolerance: float = 0.35,
     ) -> bool:
-        """MoveGroup 액션으로 포즈 이동 (폴백용).
-
-        Args:
-            orientation_tolerance: X/Y축 orientation 허용 오차 (rad).
-                기본 0.35 rad (~20도). 6-DOF 로봇은 너무 타이트하면
-                goal sampling 실패 (OMPL).
-        """
+        """MoveGroup 액션으로 포즈 이동 (폴백용)."""
         from moveit_msgs.msg import PositionConstraint, OrientationConstraint, BoundingVolume
         from shape_msgs.msg import SolidPrimitive
 
@@ -380,8 +322,6 @@ class RobotController(Node):
                 self.get_logger().error(f"  planning_time={result.result.planning_time:.3f}s")
             return False
 
-    # ── Cartesian 직선 경로 ────────────────────────────────────
-
     def _move_cartesian(
         self, waypoints: list, max_step: float = 0.01,
         min_fraction: float = 0.7,
@@ -418,50 +358,6 @@ class RobotController(Node):
 
         return self._execute_trajectory(response.solution)
 
-    def move_linear(
-        self, x: float, y: float, z: float,
-        ox: float | None = None, oy: float | None = None,
-        oz: float | None = None, ow: float | None = None,
-        velocity_scaling: float = 0.3,
-        acceleration_scaling: float = 0.3,
-    ) -> bool:
-        """Cartesian 직선 경로로 이동.
-
-        orientation을 지정하지 않으면 현재 EE orientation을 유지합니다.
-        """
-        # orientation 미지정 시 현재 EE 자세 사용
-        if ox is None:
-            current_ori = self.get_current_ee_orientation()
-            if current_ori:
-                ox, oy, oz, ow = current_ori
-                self.get_logger().info(
-                    f"직선 이동 (Cartesian): ({x:.3f}, {y:.3f}, {z:.3f}), "
-                    f"현재 자세 유지 quat=({ox:.3f}, {oy:.3f}, {oz:.3f}, {ow:.3f})"
-                )
-            else:
-                ox, oy, oz, ow = 1.0, 0.0, 0.0, 0.0
-                self.get_logger().info(f"직선 이동 (Cartesian): ({x:.3f}, {y:.3f}, {z:.3f}), 기본 자세")
-        else:
-            oy = oy or 0.0
-            oz = oz or 0.0
-            ow = ow or 0.0
-            self.get_logger().info(f"직선 이동 (Cartesian): ({x:.3f}, {y:.3f}, {z:.3f})")
-
-        target = Pose()
-        target.position.x = x
-        target.position.y = y
-        target.position.z = z
-        target.orientation.x = ox
-        target.orientation.y = oy
-        target.orientation.z = oz
-        target.orientation.w = ow
-
-        return self._move_cartesian(
-            [target],
-            velocity_scaling=velocity_scaling,
-            acceleration_scaling=acceleration_scaling,
-        )
-
     def _execute_trajectory(self, trajectory) -> bool:
         """RobotTrajectory를 FollowJointTrajectory 액션으로 실행."""
         goal = FollowJointTrajectory.Goal()
@@ -487,40 +383,6 @@ class RobotController(Node):
             self.get_logger().error(f"실행 실패: {result.result.error_code}")
             return False
 
-    # ── 그리퍼 제어 ────────────────────────────────────────────
 
-    def set_gripper(self, width: float) -> bool:
-        """그리퍼를 지정 너비로 이동."""
-        self.get_logger().info(f"그리퍼: {'열기' if width > 0.02 else '닫기'} ({width:.4f})")
-
-        gripper_cfg = self._robot_config.gripper
-
-        goal = FollowJointTrajectory.Goal()
-        trajectory = JointTrajectory()
-        trajectory.joint_names = gripper_cfg.joint_names
-
-        point = JointTrajectoryPoint()
-        point.positions = [width] * len(gripper_cfg.joint_names)
-        point.time_from_start = Duration(sec=1, nanosec=0)
-        trajectory.points.append(point)
-
-        goal.trajectory = trajectory
-
-        future = self._gripper_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future)
-        goal_handle = future.result()
-
-        if not goal_handle.accepted:
-            self.get_logger().error("그리퍼 목표 거부됨!")
-            return False
-
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
-        result = result_future.result()
-
-        if result.result.error_code == FollowJointTrajectory.Result.SUCCESSFUL:
-            self.get_logger().info("그리퍼 완료!")
-            return True
-        else:
-            self.get_logger().warn(f"그리퍼 결과: {result.result.error_code}")
-            return True  # 물체에 막혀도 성공 처리
+# 하위 호환 alias
+RobotController = MoveItController

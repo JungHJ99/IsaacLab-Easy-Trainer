@@ -21,14 +21,20 @@ class TargetObject:
     """
 
     def __init__(self, name: str, stage, size: float = 0.06,
-                 color: tuple = (1.0, 0.3, 0.2), shape: str = "cube",
+                 color: tuple | None = None, shape: str = "cube",
                  height: float | None = None,
                  usd_path: str | None = None, scale: float = 1.0,
                  position_range: list | None = None,
                  orientation_range: list | None = None,
                  deformable: float | None = None,
-                 collision_approximation: str = "convexHull"):
+                 collision_approximation: str = "convexHull",
+                 friction: float = 1.0,
+                 mass: float | None = None):
         from pxr import Usd, UsdGeom, UsdPhysics, Gf
+
+        # 프리미티브는 color 기본값 필요, USD는 None 유지
+        if color is None and usd_path is None:
+            color = (1.0, 0.3, 0.2)
 
         self.name = name
         self.prim_path = f"/World/{name}"
@@ -60,6 +66,10 @@ class TargetObject:
                 self._xform.AddScaleOp().Set(Gf.Vec3d(scale, scale, scale))
             self._xform.AddTranslateOp()
 
+            # USD 오브젝트에 color 지정 시 OmniPBR 머티리얼 생성 후 바인딩
+            if color is not None:
+                self._apply_color_to_usd(stage, prim, color)
+
             # USD 참조의 메쉬에 CollisionAPI 적용
             if prim.IsA(UsdGeom.Mesh):
                 UsdPhysics.CollisionAPI.Apply(prim)
@@ -73,7 +83,6 @@ class TargetObject:
                         mesh_collision.CreateApproximationAttr(collision_approximation)
         else:
             # 프리미티브 생성
-            self._use_transform_op = False
             if shape == "cube":
                 geom = UsdGeom.Cube.Define(stage, self.prim_path)
                 geom.GetSizeAttr().Set(size)
@@ -90,8 +99,19 @@ class TargetObject:
                 self.half_height = actual_height / 2.0
 
             self._xform = UsdGeom.Xformable(stage.GetPrimAtPath(self.prim_path))
+
+            if orientation_range is not None:
+                self._use_transform_op = True
+                ori_min, ori_max = orientation_range
+                init_ori = tuple((ori_min[i] + ori_max[i]) / 2.0 for i in range(3))
+                mat = self._build_transform_matrix(init_ori, 1.0)
+                self._xform.AddTransformOp().Set(mat)
+            else:
+                self._use_transform_op = False
+
             self._xform.AddTranslateOp()
-            geom.CreateDisplayColorAttr([color])
+            if color is not None:
+                geom.CreateDisplayColorAttr([color])
 
         prim = stage.GetPrimAtPath(self.prim_path)
 
@@ -142,14 +162,19 @@ class TargetObject:
             UsdPhysics.RigidBodyAPI.Apply(prim)
             UsdPhysics.CollisionAPI.Apply(prim)
 
-        # 높은 마찰력으로 그리핑 안정성 향상
+        # 마찰력 설정 (그리핑 안정성)
         material_path = f"{self.prim_path}/PhysicsMaterial"
         UsdPhysics.MaterialAPI.Apply(stage.DefinePrim(material_path))
         mat_prim = stage.GetPrimAtPath(material_path)
         mat_api = UsdPhysics.MaterialAPI(mat_prim)
-        mat_api.CreateStaticFrictionAttr(1.0)
-        mat_api.CreateDynamicFrictionAttr(1.0)
+        mat_api.CreateStaticFrictionAttr(friction)
+        mat_api.CreateDynamicFrictionAttr(friction)
         mat_api.CreateRestitutionAttr(0.0)
+
+        # 질량 설정 (지정 시)
+        if mass is not None:
+            mass_api = UsdPhysics.MassAPI.Apply(prim)
+            mass_api.CreateMassAttr(mass)
         from pxr import UsdShade
         UsdShade.MaterialBindingAPI.Apply(prim).Bind(
             UsdShade.Material(mat_prim),
@@ -158,6 +183,35 @@ class TargetObject:
         )
 
         self._position = np.array([0.0, 0.0, 0.0])
+
+    def _apply_color_to_usd(self, stage, prim, color):
+        """USD 오브젝트에 단색 OmniPBR 머티리얼을 생성하여 바인딩.
+
+        원본 텍스처를 무시하고 지정된 color로 덮어씁니다.
+        """
+        from pxr import UsdShade, Sdf, Gf
+
+        mat_path = f"{self.prim_path}/Looks/ColorMaterial"
+        shader_path = f"{mat_path}/Shader"
+
+        mat = UsdShade.Material.Define(stage, mat_path)
+        shader = UsdShade.Shader.Define(stage, shader_path)
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*color)
+        )
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.5)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+
+        mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        # 모든 하위 메쉬에 바인딩
+        from pxr import Usd, UsdGeom
+        for desc in Usd.PrimRange(prim):
+            if desc.IsA(UsdGeom.Mesh):
+                UsdShade.MaterialBindingAPI.Apply(desc).Bind(mat)
+
+        print(f"[INFO] USD 오브젝트 색상 적용: {self.name} → {color}")
 
     @staticmethod
     def _euler_to_rotation(orientation):
@@ -328,16 +382,18 @@ class ObjectManager:
         self._robot_prim_path = None
 
     def add_object(self, name: str, size: float = 0.06,
-                   color: tuple = (1.0, 0.3, 0.2), shape: str = "cube",
+                   color: tuple | None = None, shape: str = "cube",
                    height: float | None = None,
                    usd_path: str | None = None, scale: float = 1.0,
                    position_range: list | None = None,
                    orientation_range: list | None = None,
                    deformable: float | None = None,
-                   collision_approximation: str = "convexHull") -> TargetObject:
+                   collision_approximation: str = "convexHull",
+                   friction: float = 1.0,
+                   mass: float | None = None) -> TargetObject:
         obj = TargetObject(name, self._stage, size, color, shape, height,
                            usd_path, scale, position_range, orientation_range,
-                           deformable, collision_approximation)
+                           deformable, collision_approximation, friction, mass)
         self.objects.append(obj)
         return obj
 
@@ -424,6 +480,15 @@ class ObjectManager:
             pos = obj.get_position()
             rel_pt = inv_base_tf.Transform(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
 
+            # 오브젝트 orientation (월드 → 로봇 base 기준)
+            obj_prim = self._stage.GetPrimAtPath(obj.prim_path)
+            obj_xform = UsdGeom.Xformable(obj_prim)
+            world_tf = obj_xform.ComputeLocalToWorldTransform(0)
+            rel_tf = inv_base_tf * world_tf
+            rel_quat = rel_tf.ExtractRotation().GetQuaternion()
+            qw = rel_quat.GetReal()
+            qi = rel_quat.GetImaginary()
+
             marker = Marker()
             marker.header.frame_id = "panda_link0"
             marker.ns = obj.name
@@ -433,13 +498,17 @@ class ObjectManager:
             marker.pose.position.x = rel_pt[0]
             marker.pose.position.y = rel_pt[1]
             marker.pose.position.z = rel_pt[2]
-            marker.pose.orientation.w = 1.0
+            marker.pose.orientation.x = qi[0]
+            marker.pose.orientation.y = qi[1]
+            marker.pose.orientation.z = qi[2]
+            marker.pose.orientation.w = qw
             marker.scale.x = obj.size
             marker.scale.y = obj.size
             marker.scale.z = obj.size
-            marker.color.r = float(obj.color[0])
-            marker.color.g = float(obj.color[1])
-            marker.color.b = float(obj.color[2])
+            c = obj.color if obj.color is not None else (0.5, 0.5, 0.5)
+            marker.color.r = float(c[0])
+            marker.color.g = float(c[1])
+            marker.color.b = float(c[2])
             marker.color.a = 0.8
 
             self._marker_pubs[obj.name].publish(marker)
