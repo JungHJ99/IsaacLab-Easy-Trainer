@@ -13,6 +13,10 @@
 **/*.usda
 **/*.usdc
 **/*.usdz
+# 예외: custom_usds 디렉토리의 USD 파일은 허용
+!custom_usds/usd/**/*.usd
+!custom_usds/usd/**/*.usda
+!custom_usds/usd/**/*.usdc
 
 # Python
 .DS_Store
