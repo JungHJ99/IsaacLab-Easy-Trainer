@@ -100,24 +100,28 @@ class PickAndPlaceTask(BaseTask):
         initial_joints = skills.get_current_arm_joints()
         self.logger.info(f"  초기 관절: {initial_joints}")
 
-        # grasp yaw 계산
+        # grasp yaw 계산 (모두 물체 orientation 기준 상대각도)
         pick_ori_kwargs = {}
         grasp_yaw_rad = None
 
+        # 물체의 world yaw 추출
+        obj_yaw_rad = 0.0
+        obj_ori = self._controller.object_orientations.get(self._pick_object)
+        if obj_ori:
+            ox, oy, oz, ow = obj_ori
+            rot = R.from_quat([ox, oy, oz, ow])
+            local_x_in_world = rot.apply([1, 0, 0])
+            obj_yaw_rad = math.atan2(local_x_in_world[1], local_x_in_world[0])
+
         if self._grasp_yaw == "auto":
-            # 오브젝트 yaw에 자동 정렬
-            obj_ori = self._controller.object_orientations.get(self._pick_object)
-            if obj_ori:
-                ox, oy, oz, ow = obj_ori
-                rot = R.from_quat([ox, oy, oz, ow])
-                local_x_in_world = rot.apply([1, 0, 0])
-                grasp_yaw_rad = math.atan2(local_x_in_world[1], local_x_in_world[0])
+            # 오브젝트 yaw에 자동 정렬 (상대 오프셋 0)
+            grasp_yaw_rad = obj_yaw_rad
         elif self._grasp_yaw == "horizontal":
-            grasp_yaw_rad = 0.0
+            grasp_yaw_rad = obj_yaw_rad + 0.0
         elif self._grasp_yaw == "vertical":
-            grasp_yaw_rad = math.pi / 2
+            grasp_yaw_rad = obj_yaw_rad + math.pi / 2
         elif isinstance(self._grasp_yaw, (int, float)):
-            grasp_yaw_rad = math.radians(float(self._grasp_yaw))
+            grasp_yaw_rad = obj_yaw_rad + math.radians(float(self._grasp_yaw))
 
         if grasp_yaw_rad is not None:
             # 평행 그리퍼: yaw와 yaw+180°는 동일 grasp → [-90°, 90°]로 정규화

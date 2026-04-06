@@ -57,20 +57,20 @@ class Pi0Env(BaseEnv):
         #                 position_range=[[0.18, -0.18, 0.040], [0.43, 0.18, 0.040]])
         # WhitePlate를 먼저 배치 (큰 오브젝트 우선 → 겹침 방지)
         self.add_object("WhitePlate", size=0.22, color=(0.95, 0.95, 0.95), shape="cylinder", height=0.01,
-                position_range=[[0.2, 0.0, 0.052], [0.50, 0.35, 0.052]])
+                position_range=[[0.2, -0.35, 0.052], [0.50, 0.35, 0.052]])
         
         # 큐브들은 WhitePlate 배치 후 겹치지 않는 곳에 자동 배치
         self.add_object("RedCube", size=0.05, color=(0.8, 0.0, 0.0), shape="cube",
-                position_range=[[0.2, -0.35, 0.052], [0.50, 0, 0.052]],
+                position_range=[[0.2, -0.35, 0.052], [0.50, 0.35, 0.052]],
                 orientation_range=[[0, 0, -45], [0, 0, 45]])
         self.add_object("BlueCube", size=0.05, color=(0.0, 0.03, 0.1), shape="cube",
-                position_range=[[0.2, -0.35, 0.052], [0.50, 0, 0.052]],
+                position_range=[[0.2, -0.35, 0.052], [0.50, 0.35, 0.052]],
                 orientation_range=[[0, 0, -45], [0, 0, 45]])
         self.add_object("GreenCube", size=0.05, color=(0.0, 0.03, 0.0), shape="cube",
-                position_range=[[0.2, -0.35, 0.052], [0.50, 0, 0.052]],
+                position_range=[[0.2, -0.35, 0.052], [0.50, 0.35, 0.052]],
                 orientation_range=[[0, 0, -45], [0, 0, 45]])
         self.add_object("AlienDoll", usd_path=str(USD_DIR / "alien_doll.usd"), size=0.08, scale=0.1,
-                        position_range=[[0.2, -0.35, 0.052], [0.5, 0, 0.052]], orientation_range=[[0, 0, -135], [0, 0, -45]],
+                        position_range=[[0.2, -0.35, 0.052], [0.5, 0.35, 0.052]], orientation_range=[[0, 0, -135], [0, 0, -45]],
                         friction=3.0, mass=0.02)
         
         self.add_bg_object("Clamp_bg", usd_path=str(USD_DIR / "clamp_for_robot.usd"),

@@ -171,15 +171,94 @@ class RobotSkills:
 
     # ── 복합 스킬 ──────────────────────────────────────────────
 
+    def grasp(self, x: float, y: float, z: float,
+              approach_dir: str = "top_down",
+              grasp_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+              grasp_yaw: float | str = 0,
+              approach_distance: float = 0.10,
+              contact_offset: float = 0.01) -> bool:
+        """오브젝트를 잡기 (approach → descend/advance → close_gripper).
+
+        lift는 포함하지 않음. 잡는 것까지가 하나의 스킬.
+
+        Args:
+            x, y, z: 오브젝트 원점 위치.
+            approach_dir: 접근 방향.
+                - "top_down": 위에서 아래로 (기본)
+                - "frontal": 정면에서 접근 (수평)
+            grasp_offset: 오브젝트 원점에서 실제 잡을 지점까지의 오프셋 (dx, dy, dz).
+                          예: 손잡이가 오른쪽에 있으면 (0.05, 0, 0).
+            grasp_yaw: 그리퍼 yaw 설정.
+                - float: 도(degree) 단위. 0=가로, 90=세로.
+                - "auto": 오브젝트 orientation에서 자동 추출 (별도 처리 필요).
+            approach_distance: 접근 거리 (오브젝트로부터 떨어진 정도).
+            contact_offset: 접촉 오프셋 (gripper가 오브젝트에 얼마나 가까이 가는지).
+
+        Returns:
+            bool: 성공 여부.
+        """
+        import math
+        from scipy.spatial.transform import Rotation as R
+
+        gl = self.gripper_length
+        gx = x + grasp_offset[0]
+        gy = y + grasp_offset[1]
+        gz = z + grasp_offset[2]
+
+        # orientation 계산
+        if isinstance(grasp_yaw, str) and grasp_yaw == "auto":
+            ori = self.grasp_ori_kwargs
+        else:
+            yaw_rad = math.radians(float(grasp_yaw))
+            # [-90, 90] 정규화 (평행 그리퍼 대칭)
+            while yaw_rad > math.pi / 2:
+                yaw_rad -= math.pi
+            while yaw_rad < -math.pi / 2:
+                yaw_rad += math.pi
+
+            if approach_dir == "top_down":
+                # top-down (Y축 180°) + Z축 yaw
+                aligned = R.from_euler('YZ', [math.pi, -yaw_rad])
+            else:
+                # frontal (X축 -90° → 정면) + Z축 yaw
+                aligned = R.from_euler('XZ', [-math.pi / 2, -yaw_rad])
+
+            aq = aligned.as_quat()  # xyzw
+            ori = {"ox": aq[0], "oy": aq[1], "oz": aq[2], "ow": aq[3]}
+
+        self._logger.info(
+            f"[grasp] dir={approach_dir}, yaw={grasp_yaw}, "
+            f"offset=({grasp_offset[0]:.3f}, {grasp_offset[1]:.3f}, {grasp_offset[2]:.3f}), "
+            f"grasp_point=({gx:.3f}, {gy:.3f}, {gz:.3f})"
+        )
+
+        if approach_dir == "top_down":
+            # 위에서 접근: approach(높이) → descend(내려가기)
+            if not self.approach(gx, gy, gz, height=approach_distance + gl, **ori):
+                return False
+            if not self.descend(gx, gy, gz, height=contact_offset + gl, **ori):
+                return False
+        else:
+            # 정면 접근: approach(뒤에서) → advance(앞으로)
+            # 로봇 base에서 오브젝트 방향의 반대쪽에서 접근
+            approach_x = gx - approach_distance  # 오브젝트 뒤쪽
+            if not self._ctrl.move_to_pose(approach_x, gy, gz + gl, **ori):
+                return False
+            if not self._ctrl.move_linear(gx - contact_offset, gy, gz + gl, **ori):
+                return False
+
+        self.close_gripper()
+        return True
+
     def pick(self, x: float, y: float, z: float,
              approach_offset: float = 0.15,
              grasp_offset: float = 0.01,
              lift_offset: float = 0.10,
              ox: float | None = None, oy: float | None = None,
              oz: float | None = None, ow: float | None = None) -> bool:
-        """오브젝트를 잡아서 들어올리기.
+        """오브젝트를 잡아서 들어올리기 (grasp + lift).
 
-        approach → descend → close_gripper → lift 시퀀스.
+        grasp → lift 시퀀스. 간단한 top-down pick용 래퍼.
 
         Args:
             x, y, z: 오브젝트 위치.
@@ -201,12 +280,11 @@ class RobotSkills:
 
         if not self.approach(x, y, z, height=approach_offset + gl, **ori):
             return False
-        # self._hold(0.1)
         if not self.descend(x, y, z, height=grasp_offset + gl, **ori):
             return False
-        # self._hold(0.1)
         self.close_gripper()
-        # self._hold(0.1)
+        if not self.lift(x, y, z, height=lift_offset + gl, **ori):
+            return False
         return True
 
     def place(self, x: float, y: float, z: float,
@@ -289,6 +367,38 @@ class RobotSkills:
         self.open_gripper()
         # self.retreat(tx, ty, tz, height=lift_offset + gl - off_z, **ori)
         return True
+
+    def look_at_object(self, x: float, y: float, z: float,
+                       height: float = 0.30,
+                       tilt_deg: float = 30.0) -> bool:
+        """물체 위쪽 높은 곳으로 비스듬히 이동하여 wrist 카메라로 내려다보기.
+
+        로봇 베이스에서 물체 방향으로 비스듬히 기울인 자세로 정지한다.
+        wrist 카메라 시야에 물체가 한눈에 들어오는 높이.
+
+        Args:
+            x, y, z: 오브젝트 위치.
+            height: 오브젝트 z 위로 올릴 높이 (기본 0.30m).
+            tilt_deg: 수직에서 기울이는 각도 (기본 30도). 0이면 top-down.
+        """
+        import math
+        from scipy.spatial.transform import Rotation as R
+
+        # 로봇 베이스(0,0)에서 물체 방향의 yaw
+        yaw = math.atan2(y, x)
+        tilt_rad = math.radians(tilt_deg)
+
+        # 수직(Y축 pi)에서 tilt만큼 기울임, yaw 방향으로 회전
+        rot = R.from_euler('ZY', [yaw, math.pi - tilt_rad])
+        q = rot.as_quat()  # xyzw
+        ori = {"ox": q[0], "oy": q[1], "oz": q[2], "ow": q[3]}
+
+        target_z = z + height
+        self._logger.info(
+            f"[skill] look_at_object → ({x:.3f}, {y:.3f}, {target_z:.3f}), "
+            f"tilt={tilt_deg:.0f}°, yaw={math.degrees(yaw):.0f}°"
+        )
+        return self._ctrl.move_to_pose(x, y, target_z, **ori)
 
     def insert(self, x: float, y: float, z: float,
                approach_offset: float = 0.15,
