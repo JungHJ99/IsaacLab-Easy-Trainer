@@ -1,7 +1,7 @@
 ##
 ## Piper V100 6-DOF robot configuration for cuRobo
 ## Wide gripper version (0~0.05m sim, 0~0.10m real)
-## base_link: arm_base, ee_link: link6 (no gripper_base, no tcp)
+## base_link: arm_base, ee_link: tcp (link6 +Z 0.135 fixed offset = grasp center)
 ##
 
 robot_cfg:
@@ -10,7 +10,7 @@ robot_cfg:
     urdf_path: "/root/ws/src/piper_description/urdf/piper_description_v100.urdf"
     asset_root_path: "/root/ws/src/piper_description"
     base_link: "arm_base"
-    ee_link: "link6"
+    ee_link: "tcp"
     cspace:
       joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
       retract_config: [0.0, 1.57, -1.57, 0.0, 0.0, 0.0]

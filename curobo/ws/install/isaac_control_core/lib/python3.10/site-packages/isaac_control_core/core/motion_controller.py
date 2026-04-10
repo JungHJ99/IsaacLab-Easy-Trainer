@@ -5,6 +5,7 @@ ROS2 노드, TF, 관절 상태, 오브젝트 추적 등 공통 기능을 제공�
 실제 모션 플래닝/실행은 서브클래스에서 구현한다.
 """
 
+import time
 from abc import ABC, abstractmethod
 
 import rclpy
@@ -115,15 +116,18 @@ class MotionController(Node, ABC):
     def wait_for_ready(self):
         """모든 필요한 데이터가 수신될 때까지 대기.
 
+        주의: 이 메서드는 외부 background spin thread가 이 노드를 spin 중이라고
+        가정한다. 콜백 처리는 외부 spin에 위임하고, 여기서는 단순 polling만 한다.
+
         1. 서브클래스의 _wait_for_planner() 호출 (플래너별 서버/서비스 대기)
-        2. joint_states 수신 대기
+        2. joint_states 수신 대기 (background spin이 콜백 처리)
         3. 오브젝트 위치 수신 대기
         """
         self._wait_for_planner()
 
         self.get_logger().info("joint_states 대기 중...")
         while self._current_joint_state is None:
-            rclpy.spin_once(self, timeout_sec=0.5)
+            time.sleep(0.1)
 
         js = self._current_joint_state
         for i, name in enumerate(js.name):
@@ -136,7 +140,7 @@ class MotionController(Node, ABC):
             while not all(
                 name in self._object_positions for name in self._tracked_objects
             ):
-                rclpy.spin_once(self, timeout_sec=0.5)
+                time.sleep(0.1)
 
             for name in self._tracked_objects:
                 self.get_logger().info(f"  {name} 위치: {self._object_positions[name]}")
@@ -144,6 +148,15 @@ class MotionController(Node, ABC):
         self.get_logger().info("모든 준비 완료!")
 
     # ── 공통 헬퍼 ─────────────────────────────────────────────
+
+    def sync_state(self, n: int = 30, timeout: float = 0.05):
+        """콜백 처리 대기. 외부 executor가 background에서 spin 중이라고 가정.
+
+        background executor가 콜백을 자동으로 처리하므로,
+        이 메서드는 단순히 in-flight 메시지가 도착할 시간만 확보한다.
+        n, timeout 인자는 backward compat용 — 실제 wait 시간은 0.1초 고정.
+        """
+        time.sleep(0.1)
 
     def _get_arm_positions(self) -> list[float]:
         """현재 arm 관절 위치를 순서대로 반환."""
@@ -165,11 +178,6 @@ class MotionController(Node, ABC):
         except Exception as e:
             self.get_logger().warn(f"EE orientation 조회 실패: {e}")
             return None
-
-    @property
-    def gripper_length_override(self) -> float | None:
-        """플래너별 gripper_length 오버라이드. None이면 RobotConfig 값 사용."""
-        return None
 
     @property
     def needs_orientation_correction(self) -> bool:

@@ -79,8 +79,7 @@ class PickAndPlaceTask(BaseTask):
             return False
 
         # 오브젝트 위치 최신화 (리셋 직후 stale 방지)
-        for _ in range(30):
-            rclpy.spin_once(self._controller, timeout_sec=0.05)
+        self._controller.sync_state(30)
 
         skills = RobotSkills(self._controller)
 
@@ -157,7 +156,7 @@ class PickAndPlaceTask(BaseTask):
         if not skills.place(px, py, pz,
                             approach_offset=APPROACH_OFFSET,
                             place_offset=PLACE_OFFSET,
-                            lift_offset=LIFT_OFFSET):
+                            lift_offset=0.2):
             self.logger.error("Place 실패!")
             return False
 
@@ -179,8 +178,7 @@ class PickAndPlaceTask(BaseTask):
         ctrl = self._controller
 
         # 최신 위치 수신을 위해 잠시 spin
-        for _ in range(10):
-            rclpy.spin_once(ctrl, timeout_sec=0.1)
+        ctrl.sync_state(10, timeout=0.1)
 
         positions = ctrl.object_positions
         if self._pick_object not in positions or self._place_target not in positions:

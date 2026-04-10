@@ -26,7 +26,7 @@ def run(controller_class, args=None, **controller_kwargs):
     rclpy.init(args=args)
 
     tmp_node = rclpy.create_node("_pnp_service_params")
-    tmp_node.declare_parameter("pick_object", "AlienDoll")
+    tmp_node.declare_parameter("pick_object", "RedCube")
     tmp_node.declare_parameter("place_target", "WhitePlate")
     tmp_node.declare_parameter("grasp_yaw", "auto")
     pick_object = tmp_node.get_parameter("pick_object").get_parameter_value().string_value
@@ -50,7 +50,7 @@ def run(controller_class, args=None, **controller_kwargs):
         node_name="pick_and_place_service_piper",
         **controller_kwargs,
     )
-    controller.wait_for_ready()
+    # wait_for_ready는 run_task_service 안에서 background spin 시작 후 호출됨
 
     run_task_service(
         controller=controller,
@@ -59,6 +59,6 @@ def run(controller_class, args=None, **controller_kwargs):
         service_label="Pick-and-Place",
         pick_object=pick_object,
         place_target=place_target,
-        task_kwargs={"grasp_yaw": 30},
+        task_kwargs={"grasp_yaw": 0},
         timeout=120.0,
     )

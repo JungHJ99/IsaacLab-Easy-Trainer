@@ -8,7 +8,6 @@ pick 후 EE-오브젝트 상대 오프셋을 계산하여,
 from __future__ import annotations
 
 import math
-import rclpy
 from typing import TYPE_CHECKING
 
 from isaac_control_core.core.task import BaseTask
@@ -125,8 +124,7 @@ class StackCubeTask(BaseTask):
         ctrl = self._controller
 
         # 최신 위치 수신을 위해 잠시 spin
-        for _ in range(10):
-            rclpy.spin_once(ctrl, timeout_sec=0.1)
+        ctrl.sync_state(10, timeout=0.1)
 
         positions = ctrl.object_positions
         if self._pick_object not in positions or self._place_target not in positions:

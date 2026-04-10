@@ -29,7 +29,7 @@ MoveIt Bridge 불필요 — cuRobo가 trajectory를 직접 생성하므로 Follo
 #### ee_link 설정
 - piper.yml에서 `ee_link`는 반드시 **"gripper_base"** 사용 (tcp 아님)
 - **중요**: `tcp`로 설정하면 top-down IK가 모두 실패함 (cuRobo에서 tcp는 IK solver와 호환 안 됨)
-- `gripper_length_override = -0.03` (PiperConfig 기본값 -0.05 대신 사용)
+- `gripper_length`는 RobotConfig에서 직접 설정 (CuroboController override 없음)
 
 #### MotionGenConfig 임계값
 - `rotation_threshold = 0.5` (~29도) — 목표 도달 판정 회전 허용 오차
@@ -67,23 +67,31 @@ MoveIt Bridge 불필요 — cuRobo가 trajectory를 직접 생성하므로 Follo
 #### Trajectory 실행 안정화 (`_execute_cu_trajectory`)
 - **Blending**: 현재 위치 → trajectory 시작점까지 보간 구간을 앞에 추가
   - trajectory 시작점으로의 갑작스러운 점프 방지
-- **가속/감속 프로파일**: 처음/마지막 10% 구간에서 점진적 가속/감속 (dt 조정)
-- 실행 완료 후: 최종 position을 **40회** publish + `spin_once` **10회**로 상태 동기화
+- **가속/감속 프로파일**: 처음 15% / 마지막 25% 구간에서 점진적 가속/감속 (dt 조정)
+- 실행 완료 후: 최종 position을 **50회** publish (60Hz) — 물리 안정화
 - **⚠️ hold 횟수/시간을 절대 줄이지 말 것!** 줄이면 모션 사이에 로봇이 튀는 현상 발생.
   현재 값이 안정화 최소 기준이며, 속도를 올리려면 hold가 아닌 trajectory 자체의 dt를 조정할 것.
+- 콜백 처리는 background executor가 담당 — 인라인 `spin_once` 사용 금지
 
 #### move_linear hold 안정화
-- IK 보간 후 최종 위치를 **50회 (1초)** hold + `spin_once` **30회**로 상태 동기화
+- IK 보간 후 최종 위치를 **130회 (1.3초)** hold (100Hz) — 위로 튀는 현상 방지
 - **⚠️ 이 값도 절대 줄이지 말 것!** move_linear 후 hold가 부족하면 descend→close_gripper 사이에 로봇이 위로 튀어오름.
+- 인라인 `spin_once` 없음 — background executor가 콜백 처리
 
 #### hold_position() 메서드
 - 현재 위치를 **60Hz**로 지속 publish하는 메서드
 - 대기 시간 동안 로봇이 현재 위치를 유지하도록 함
 - `time.sleep()` 대신 사용하여 물리 시뮬레이션 안정화
+- 인라인 `spin_once` 없음 — background executor가 콜백 처리
 
-#### spin_once 호출 시점
-- 모든 모션 메서드 (`move_to_joint`, `move_to_pose`, `move_linear`) 시작 전에 `spin_once` 호출
-- 플래닝 전 최신 상태 데이터 확보 목적
+#### 상태 동기화 — background spin 의존
+- ⚠️ **`CuroboController` 안에서 `rclpy.spin_once(self, ...)` 호출 금지**
+  - `service_runner`가 controller를 별도 `SingleThreadedExecutor`로 background spin 중
+  - 명시적 spin 호출은 `ValueError: generator already executing` 충돌 발생
+- 모션 메서드 시작 시 `self.sync_state()` 호출 → 단순 `time.sleep(0.1)`
+  - background executor가 그동안 콜백을 처리해서 `_current_joint_state`가 fresh
+- `_joint_state_cb`는 `_current_joint_state` 갱신만 담당
+  - `/joint_states` 외부 발행은 `GripperScaleBridge`가 전담 (중복 발행 제거)
 
 #### cuRobo quaternion 순서
 - cuRobo는 **wxyz** 순서 (ROS의 xyzw와 다름)
@@ -97,16 +105,17 @@ MoveIt Bridge 불필요 — cuRobo가 trajectory를 직접 생성하므로 Follo
 
 | 방향 | 시뮬 토픽 | 실제 토픽 |
 |------|-----------|-----------|
-| joint_states (구독) | `/simulation/joint_states` | `/joint_states` |
-| joint_command (발행) | `/simulation/joint_command` | `/joint_command` |
+| joint_states (republish) | `/simulation/joint_states` (sub) | `/joint_states` (pub) |
+| joint_command (republish) | `/simulation/joint_command` (sub) | `/joint_command` (pub) |
 
-#### _publish_cmd() 동작
-- IsaacSim용 (sim scale)과 외부 토픽 (real scale) **양쪽에 동시에 발행**
-- sim scale → real scale 변환 후 `/joint_command`로 발행
+#### `/joint_states` 발행 책임
+- **GripperScaleBridge가 전담** — `CuroboController._joint_state_cb`는 발행하지 않음
+- 이전에는 양쪽에서 중복 발행하여 콜백 레이턴시 증가
+- `CuroboController._joint_state_cb`는 내부 `_current_joint_state` 갱신만 수행
 
-#### _joint_state_cb override
-- `/simulation/joint_states`에서 gripper 값(sim scale)을 수신
-- real scale로 변환하여 저장 (`_joint_state_cb` 내부에서 처리)
+#### CuroboController._publish_cmd() 동작
+- IsaacSim용 (sim scale)과 `/joint_command` (real scale) **양쪽에 동시 발행**
+- sim → real 변환 후 `/joint_command`로 발행
 
 #### 로봇별 gripper 시뮬 한계값 (_GRIPPER_SIM_LIMITS dict)
 - `piper`: 0.035

@@ -8,7 +8,7 @@ def main(args=None):
     run_motor_in_box(
         CuroboController,
         args=args,
-        curobo_config_path="/root/ws/src/curobo_control/config/piper.yml",
+        curobo_config_path="/root/ws/src/curobo_control/config/piper_v100.yml",
     )
 
 

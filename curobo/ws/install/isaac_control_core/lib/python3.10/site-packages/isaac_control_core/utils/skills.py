@@ -28,9 +28,6 @@ class RobotSkills:
 
     @property
     def gripper_length(self) -> float:
-        override = self._ctrl.gripper_length_override
-        if override is not None:
-            return override
         return self._robot.gripper_length
 
     @property
@@ -67,8 +64,7 @@ class RobotSkills:
 
     def get_object_position(self, name: str) -> tuple[float, float, float] | None:
         """오브젝트 마커 위치를 최신으로 갱신 후 반환."""
-        for _ in range(10):
-            rclpy.spin_once(self._ctrl, timeout_sec=0.1)
+        self._ctrl.sync_state(10, timeout=0.1)
         pos = self._ctrl.object_positions.get(name)
         if pos is None:
             self._logger.error(f"오브젝트 '{name}' 위치를 찾을 수 없습니다.")
@@ -280,8 +276,10 @@ class RobotSkills:
 
         if not self.approach(x, y, z, height=approach_offset + gl, **ori):
             return False
+        self._hold(0.5)
         if not self.descend(x, y, z, height=grasp_offset + gl, **ori):
             return False
+        self._hold(0.5)
         self.close_gripper()
         if not self.lift(x, y, z, height=lift_offset + gl, **ori):
             return False
@@ -305,10 +303,12 @@ class RobotSkills:
         if not self.approach(x, y, z, height=approach_offset + gl, **ori):
             return False
         # self._hold(0.1)
-        # if not self.descend(x, y, z, height=place_offset + gl, **ori):
+        if not self.descend(x, y, z, height=place_offset + gl, **ori):
             return False
         # self._hold(0.1)
         self.open_gripper()
+        if not self.lift(x, y, z, height=lift_offset + gl, **ori):
+            return False
         # self.retreat(x, y, z, height=lift_offset + gl, **ori)
         return True
 
@@ -332,8 +332,7 @@ class RobotSkills:
         ori = self.grasp_ori_kwargs
 
         # 1) 상태 최신화 후 EE/오브젝트 위치 조회
-        for _ in range(30):
-            rclpy.spin_once(self._ctrl, timeout_sec=0.05)
+        self._ctrl.sync_state(30)
 
         ee_pos = self.get_current_ee_position()
         held_pos = self.get_object_position(held_object)

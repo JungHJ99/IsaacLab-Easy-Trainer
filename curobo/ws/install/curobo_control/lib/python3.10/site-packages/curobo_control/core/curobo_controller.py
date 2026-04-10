@@ -10,7 +10,6 @@ MoveIt FollowJointTrajectory 액션 서버를 거치지 않는다.
 
 import time
 
-import rclpy
 from sensor_msgs.msg import JointState
 
 # cuRobo imports
@@ -61,10 +60,8 @@ class CuroboController(MotionController):
         self._cmd_pub = self.create_publisher(
             JointState, "/simulation/joint_command", 10
         )
-        # 외부용 토픽 (real 스케일 0~0.085) — 녹화/재생 호환
-        self._joint_states_real_pub = self.create_publisher(
-            JointState, "/joint_states", 10
-        )
+        # 외부용 명령 토픽 (real 스케일 0~0.085) — 녹화/재생 호환
+        # 주의: /joint_states 발행은 service_runner의 GripperScaleBridge가 담당
         self._joint_command_real_pub = self.create_publisher(
             JointState, "/joint_command", 10
         )
@@ -120,7 +117,11 @@ class CuroboController(MotionController):
     # ── joint_state 콜백 오버라이드 (gripper sim→real 변환) ────
 
     def _joint_state_cb(self, msg):
-        """IsaacSim의 sim 값(0~0.035)을 real 값(0~0.085)으로 변환하여 저장."""
+        """IsaacSim의 sim 값(0~0.035)을 real 값(0~0.085)으로 변환하여 저장.
+
+        외부 토픽 `/joint_states` 발행은 GripperScaleBridge가 담당하므로
+        여기서는 controller 내부 상태(_current_joint_state)만 갱신한다.
+        """
         gripper_names = set(self._robot_config.gripper.joint_names)
         gripper_names.add("joint8")  # mimic joint
 
@@ -138,15 +139,8 @@ class CuroboController(MotionController):
                 )
 
         self._current_joint_state = converted
-        # real 스케일로 변환된 joint_states를 외부 토픽에 publish
-        self._joint_states_real_pub.publish(converted)
 
     # ── 헬퍼 ──────────────────────────────────────────────────
-
-    @property
-    def gripper_length_override(self) -> float | None:
-        # ee_link=tcp: PiperConfig 기본값(-0.05) 사용
-        return -0.022
 
     @property
     def needs_orientation_correction(self) -> bool:
@@ -183,6 +177,241 @@ class CuroboController(MotionController):
             position=torch.tensor([positions], dtype=torch.float32).cuda(),
             joint_names=arm_names,
         )
+
+    # ── 안전장치: IK/Plan 결과의 실제 EE 위치 검증 ─────────────
+
+    POSITION_TOLERANCE = 0.05  # 5cm — IK/plan 결과가 목표와 이만큼 떨어지면 거부
+
+    def _verify_ee_pose(
+        self, joint_positions, target_xyz: tuple[float, float, float],
+        label: str = "verify",
+    ) -> bool:
+        """주어진 joint 해의 실제 EE 위치가 target_xyz와 충분히 가까운지 FK로 검증.
+
+        config jump (IK가 unreachable 목표에 대해 엉뚱한 branch 선택) 감지용.
+
+        ⚠️ 한계: IK가 success=True로 반환한 해는 FK 라운드트립 시 거의 항상 통과함.
+        진짜 IK 실패는 success=False로 잡히고, 이 검증은 해 자체의 sanity check 정도.
+
+        Args:
+            joint_positions: arm joint 값 list 또는 1D torch tensor.
+            target_xyz: 목표 (x, y, z).
+            label: 로그 라벨.
+
+        Returns:
+            True if EE position error < POSITION_TOLERANCE, else False.
+        """
+        if not isinstance(joint_positions, torch.Tensor):
+            joint_positions = torch.tensor(
+                joint_positions, dtype=torch.float32
+            ).cuda()
+        if joint_positions.dim() == 1:
+            joint_positions = joint_positions.unsqueeze(0)
+
+        cu_state = CuJointState.from_position(
+            position=joint_positions,
+            joint_names=self._robot_config.arm_joint_names,
+        )
+        kin_state = self._motion_gen.compute_kinematics(cu_state)
+        actual_xyz = kin_state.ee_pos_seq[0].cpu().tolist()
+
+        err_x = actual_xyz[0] - target_xyz[0]
+        err_y = actual_xyz[1] - target_xyz[1]
+        err_z = actual_xyz[2] - target_xyz[2]
+        err = (err_x ** 2 + err_y ** 2 + err_z ** 2) ** 0.5
+
+        if err > self.POSITION_TOLERANCE:
+            self.get_logger().error(
+                f"[{label}] config jump 감지! "
+                f"target=({target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}), "
+                f"actual=({actual_xyz[0]:.3f}, {actual_xyz[1]:.3f}, {actual_xyz[2]:.3f}), "
+                f"err={err:.3f}m"
+            )
+            return False
+
+        self.get_logger().info(f"[{label}] EE 위치 검증 OK (err={err:.4f}m)")
+        return True
+
+    def diagnose_frame_alignment(self, label: str = "diag"):
+        """3-way 비교: yourdfpy URDF 진실 vs Isaac Sim TF vs cuRobo FK.
+
+        같은 joint state에 대해 세 시스템이 link 위치를 어떻게 계산하는지 비교.
+        - yourdfpy: URDF 표준 파서 (ground truth)
+        - TF: Isaac Sim USD가 publish하는 값
+        - cuRobo FK: cuRobo가 IK/플래닝에 쓰는 frame
+
+        이 셋이 모두 일치해야 정밀 grasp 가능. mismatch가 있으면 어느 시스템이
+        틀렸는지 정확히 짚을 수 있음.
+        """
+        import rclpy.time
+        import rclpy.duration
+        try:
+            import yourdfpy
+        except ImportError:
+            self.get_logger().warn("yourdfpy 미설치 — 3-way 비교 불가")
+            return
+
+        base = self._robot_config.base_frame
+        arm_names = self._robot_config.arm_joint_names
+        link_names = ["link1", "link2", "link3", "link4", "link5", "link6", "link7", "link8"]
+
+        # 1) 현재 joint state
+        js = self._current_joint_state
+        if js is None:
+            self.get_logger().warn(f"[{label}] joint_state 없음")
+            return
+        js_map = {n: p for n, p in zip(js.name, js.position)}
+        joint_cfg = {n: js_map.get(n, 0.0) for n in arm_names}
+        # gripper joint도 포함 (yourdfpy URDF가 요구할 수 있음)
+        for gn in self._robot_config.gripper.joint_names:
+            joint_cfg[gn] = js_map.get(gn, 0.0)
+        if "joint8" in js_map:
+            joint_cfg["joint8"] = js_map["joint8"]
+
+        self.get_logger().info(f"[{label}] joint_cfg: {joint_cfg}")
+
+        # 2) yourdfpy 진실 계산
+        urdf_path = "/root/ws/src/piper_description/urdf/piper_description_v100.urdf"
+        try:
+            urdf = yourdfpy.URDF.load(urdf_path)
+            urdf.update_cfg(joint_cfg)
+            urdf_positions = {}
+            for link in link_names:
+                try:
+                    T = urdf.get_transform(link, base)
+                    urdf_positions[link] = (float(T[0, 3]), float(T[1, 3]), float(T[2, 3]))
+                except Exception:
+                    pass
+        except Exception as e:
+            self.get_logger().warn(f"[{label}] yourdfpy 로드 실패: {e}")
+            urdf_positions = {}
+
+        # 3) TF 위치
+        tf_positions = {}
+        for link in link_names:
+            try:
+                t = self._tf_buffer.lookup_transform(
+                    base, link, rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=0.2),
+                )
+                p = t.transform.translation
+                tf_positions[link] = (p.x, p.y, p.z)
+            except Exception:
+                pass
+
+        # 4) cuRobo FK (ee_link만 — cuRobo는 link6를 ee_link로 설정)
+        try:
+            current_cu = self._get_current_cu_joint_state()
+            # 진단: cuRobo에 들어가는 정확한 입력 출력
+            self.get_logger().info(
+                f"[{label}] _get_current_cu_joint_state → "
+                f"joint_names={current_cu.joint_names}, "
+                f"position={current_cu.position[0].cpu().tolist()}"
+            )
+            kin = self._motion_gen.compute_kinematics(current_cu)
+            curobo_ee = tuple(kin.ee_pos_seq[0].cpu().tolist())
+
+            # 진단: 같은 joint 값을 명시적 tensor로 직접 호출했을 때 결과 비교
+            explicit_js = CuJointState.from_position(
+                position=torch.tensor(
+                    [[joint_cfg["joint1"], joint_cfg["joint2"], joint_cfg["joint3"],
+                      joint_cfg["joint4"], joint_cfg["joint5"], joint_cfg["joint6"]]],
+                    dtype=torch.float32,
+                ).cuda(),
+                joint_names=arm_names,
+            )
+            explicit_kin = self._motion_gen.compute_kinematics(explicit_js)
+            explicit_ee = tuple(explicit_kin.ee_pos_seq[0].cpu().tolist())
+            self.get_logger().info(
+                f"[{label}] explicit FK (정상 호출): "
+                f"({explicit_ee[0]:+.4f}, {explicit_ee[1]:+.4f}, {explicit_ee[2]:+.4f})"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"[{label}] cuRobo FK 실패: {e}")
+            curobo_ee = None
+
+        # 5) 비교 출력
+        self.get_logger().info(
+            f"[{label}] {'link':<8} {'yourdfpy (truth)':<30} {'TF (Isaac Sim)':<30} {'curobo FK':<30}"
+        )
+        for link in link_names:
+            u = urdf_positions.get(link)
+            t = tf_positions.get(link)
+            u_str = f"({u[0]:+.4f},{u[1]:+.4f},{u[2]:+.4f})" if u else "—"
+            t_str = f"({t[0]:+.4f},{t[1]:+.4f},{t[2]:+.4f})" if t else "—"
+            c_str = ""
+            if link == "link6" and curobo_ee:
+                c_str = f"({curobo_ee[0]:+.4f},{curobo_ee[1]:+.4f},{curobo_ee[2]:+.4f})"
+            self.get_logger().info(
+                f"[{label}] {link:<8} {u_str:<30} {t_str:<30} {c_str}"
+            )
+
+        # 6) cuRobo ee가 진짜 어느 link와 일치하는지 (URDF 진실 기준으로 매칭)
+        if curobo_ee and urdf_positions:
+            best_link, best_err = None, float("inf")
+            for link, (ux, uy, uz) in urdf_positions.items():
+                err = ((curobo_ee[0] - ux) ** 2 + (curobo_ee[1] - uy) ** 2
+                       + (curobo_ee[2] - uz) ** 2) ** 0.5
+                if err < best_err:
+                    best_err = err
+                    best_link = link
+            self.get_logger().info(
+                f"[{label}] cuRobo ee_link ↔ URDF 진실 매칭: '{best_link}' (err={best_err:.4f}m)"
+            )
+
+        # 7) TF가 진실과 일치하는지 (Isaac Sim USD가 URDF를 정확히 따르는지)
+        if tf_positions and urdf_positions:
+            for link in link_names:
+                if link in tf_positions and link in urdf_positions:
+                    t = tf_positions[link]
+                    u = urdf_positions[link]
+                    err = ((t[0] - u[0]) ** 2 + (t[1] - u[1]) ** 2 + (t[2] - u[2]) ** 2) ** 0.5
+                    if err > 0.005:
+                        self.get_logger().warn(
+                            f"[{label}] ⚠️ TF '{link}' ↔ URDF 진실 불일치: err={err:.4f}m"
+                        )
+
+    def log_actual_link_positions(self, label: str = "TF"):
+        """디버그용: cuRobo FK가 계산하는 ee_link 위치를 TF의 모든 link와 비교.
+
+        cuRobo와 Isaac Sim이 같은 URDF를 다르게 해석하는 경우가 있어서,
+        cuRobo의 "ee_link"가 사실 TF의 다른 link에 해당할 수 있음.
+        gripper_length 캘리브레이션 시 참고용. 정상 운용 중엔 호출하지 않아도 됨.
+        """
+        import rclpy.time
+        import rclpy.duration
+        base = self._robot_config.base_frame
+
+        tf_positions = {}
+        for i in range(1, 9):
+            link = f"link{i}"
+            try:
+                t = self._tf_buffer.lookup_transform(
+                    base, link, rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=0.2),
+                )
+                p = t.transform.translation
+                tf_positions[link] = (p.x, p.y, p.z)
+            except Exception:
+                pass
+
+        try:
+            current_cu = self._get_current_cu_joint_state()
+            kin = self._motion_gen.compute_kinematics(current_cu)
+            cu_xyz = kin.ee_pos_seq[0].cpu().tolist()
+            self.get_logger().info(
+                f"[{label}] cuRobo ee_link FK: "
+                f"({cu_xyz[0]:.4f}, {cu_xyz[1]:.4f}, {cu_xyz[2]:.4f})"
+            )
+            for link, (tx, ty, tz) in tf_positions.items():
+                err = ((cu_xyz[0] - tx) ** 2 + (cu_xyz[1] - ty) ** 2
+                       + (cu_xyz[2] - tz) ** 2) ** 0.5
+                self.get_logger().info(
+                    f"[{label}]   vs TF {link}: ({tx:.4f}, {ty:.4f}, {tz:.4f}) "
+                    f"err={err:.4f}m"
+                )
+        except Exception as e:
+            self.get_logger().warn(f"[{label}] FK 비교 실패: {e}")
 
     def _execute_cu_trajectory(self, trajectory, speed_scale: float = 1.0) -> bool:
         """cuRobo trajectory를 IsaacSim에 publish.
@@ -254,13 +483,10 @@ class CuroboController(MotionController):
         final_cmd = JointState()
         final_cmd.name = arm_names + gripper_names + ["joint8"]
         final_cmd.position = final_pos + [sim_gripper] + [-sim_gripper]
-        for _ in range(40):
+        # final_cmd 유지하며 hold (background executor가 콜백 처리)
+        for _ in range(50):
             self._publish_cmd(final_cmd)
             time.sleep(1.0 / 60.0)
-        # 상태 동기화
-        for _ in range(10):
-            self._publish_cmd(final_cmd)
-            rclpy.spin_once(self, timeout_sec=0.05)
 
         self.get_logger().info("Trajectory 실행 완료!")
         return True
@@ -272,8 +498,7 @@ class CuroboController(MotionController):
         self.get_logger().info("관절 이동 (cuRobo)")
 
         # 현재 관절 상태 최신화
-        for _ in range(10):
-            rclpy.spin_once(self, timeout_sec=0.05)
+        self.sync_state()
 
         arm_names = self._robot_config.arm_joint_names
         target_pos = [joint_positions.get(n, 0.0) for n in arm_names]
@@ -319,8 +544,7 @@ class CuroboController(MotionController):
         )
 
         # 현재 관절 상태 최신화
-        for _ in range(10):
-            rclpy.spin_once(self, timeout_sec=0.05)
+        self.sync_state()
 
         current = self._get_current_cu_joint_state()
 
@@ -358,6 +582,10 @@ class CuroboController(MotionController):
             f"[DEBUG] plan: {len(positions)} steps, max_diff={max_diff:.3f} at {arm_names[max_idx]}"
         )
 
+        # 안전장치: plan 종료점이 실제로 목표 위치에 도달하는지 FK로 검증
+        if not self._verify_ee_pose(end_joints, (x, y, z), label="move_to_pose"):
+            return False
+
         return self._execute_cu_trajectory(traj)
 
     def move_linear(
@@ -375,8 +603,7 @@ class CuroboController(MotionController):
         """
         if ox is None:
             # TF 최신화 후 현재 orientation 읽기
-            for _ in range(20):
-                rclpy.spin_once(self, timeout_sec=0.05)
+            self.sync_state()
             current_ori = self.get_current_ee_orientation()
             if current_ori:
                 ox, oy, oz, ow = current_ori
@@ -388,6 +615,7 @@ class CuroboController(MotionController):
                 else:
                     ox, oy, oz, ow = 0.0, 1.0, 0.0, 0.0
         else:
+            self.sync_state()
             oy = oy or 0.0
             oz = oz or 0.0
             ow = ow or 0.0
@@ -437,6 +665,11 @@ class CuroboController(MotionController):
             )
             return self.move_to_pose(x, y, z, ox, oy, oz, ow)
 
+        # 안전장치: IK 해의 실제 EE 위치가 목표와 일치하는지 FK로 검증
+        # config jump (unreachable 목표에 대한 엉뚱한 IK branch) 감지
+        if not self._verify_ee_pose(target_arm, (x, y, z), label="move_linear"):
+            return False
+
         # joint space 보간 (가감속 적용)
         sim_gripper = self._real_to_sim_gripper(self._last_gripper_width)
         n_steps = max(int(max_diff / 0.01), 30)  # 최소 30스텝
@@ -462,17 +695,13 @@ class CuroboController(MotionController):
             time.sleep(base_dt / speed_factor)
 
         # 마지막 위치 hold (안정화) — 위로 튀는 현상 방지
+        # background executor가 콜백 처리 → 명령만 지속 publish
         final_cmd = JointState()
         final_cmd.name = arm_names + gripper_names + ["joint8"]
         final_cmd.position = target_arm + [sim_gripper] + [-sim_gripper]
-        for _ in range(50):
+        for _ in range(130):
             self._publish_cmd(final_cmd)
-            time.sleep(1.0 / 50.0)
-
-        # 상태 동기화
-        for _ in range(30):
-            self._publish_cmd(final_cmd)
-            rclpy.spin_once(self, timeout_sec=0.05)
+            time.sleep(1.0 / 100.0)
 
         self.get_logger().info("직선 이동 완료!")
         return True
@@ -556,8 +785,7 @@ class CuroboController(MotionController):
 
         # 그리퍼 상태 저장 + joint state 동기화
         self._last_gripper_width = width
-        for _ in range(10):
-            rclpy.spin_once(self, timeout_sec=0.05)
+        self.sync_state()
 
         self.get_logger().info("그리퍼 완료!")
         return True

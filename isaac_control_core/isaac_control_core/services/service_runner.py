@@ -20,8 +20,10 @@ Gripper 스케일 브릿지:
 
 import time
 import threading
+import traceback
 
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
@@ -72,23 +74,31 @@ class GripperScaleBridge:
         self._cmd_pub.publish(self._convert(msg))
 
 
-def reset_env(node) -> bool:
-    """시뮬레이션 환경 리셋 서비스 호출."""
-    client = node.create_client(Trigger, "/simulation/reset_env")
-    if not client.wait_for_service(timeout_sec=10.0):
-        node.get_logger().error("리셋 서비스(/simulation/reset_env)를 찾을 수 없습니다.")
+def reset_env(logger) -> bool:
+    """시뮬레이션 환경 리셋 서비스 호출.
+
+    임시 노드를 사용 — controller는 background spin 중이라 spin_until_future_complete를
+    부르면 충돌함.
+    """
+    tmp_node = rclpy.create_node("_reset_env_client")
+    client = tmp_node.create_client(Trigger, "/simulation/reset_env")
+    try:
+        if not client.wait_for_service(timeout_sec=10.0):
+            logger.error("리셋 서비스(/simulation/reset_env)를 찾을 수 없습니다.")
+            return False
+
+        future = client.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(tmp_node, future, timeout_sec=10.0)
+
+        if future.result() is not None and future.result().success:
+            logger.info("환경 리셋 완료. 안정화 대기...")
+            time.sleep(1.5)
+            return True
+
+        logger.error("환경 리셋 실패.")
         return False
-
-    future = client.call_async(Trigger.Request())
-    rclpy.spin_until_future_complete(node, future, timeout_sec=10.0)
-
-    if future.result() is not None and future.result().success:
-        node.get_logger().info("환경 리셋 완료. 안정화 대기...")
-        time.sleep(1.5)
-        return True
-
-    node.get_logger().error("환경 리셋 실패.")
-    return False
+    finally:
+        tmp_node.destroy_node()
 
 
 def run_task_service(
@@ -153,10 +163,33 @@ def run_task_service(
 
     service_node.create_service(Trigger, service_name, service_cb)
 
-    spin_thread = threading.Thread(
-        target=rclpy.spin, args=(service_node,), daemon=True
+    # 각 노드에 별도 SingleThreadedExecutor — 노드가 명시적으로 한 executor에만
+    # 묶이도록 강제. rclpy.spin()의 default executor 충돌 방지.
+    service_executor = SingleThreadedExecutor()
+    service_executor.add_node(service_node)
+    controller_executor = SingleThreadedExecutor()
+    controller_executor.add_node(controller)
+
+    def _safe_spin(executor, name):
+        try:
+            executor.spin()
+        except Exception as e:
+            log.error(f"[spin {name}] CRASHED: {e}")
+            traceback.print_exc()
+
+    service_spin = threading.Thread(
+        target=_safe_spin, args=(service_executor, "service"), daemon=True
     )
-    spin_thread.start()
+    controller_spin = threading.Thread(
+        target=_safe_spin, args=(controller_executor, "controller"), daemon=True
+    )
+    service_spin.start()
+    controller_spin.start()
+    log.info("[spin] service_node + controller background spin 시작")
+
+    # background spin 시작 *후*에 wait_for_ready 호출
+    # → 콜백 처리는 background spin이 담당, 노드가 임시 executor에 묶이지 않음
+    controller.wait_for_ready()
 
     log.info("=" * 50)
     log.info(f"  {service_label} 서비스 대기 중")
@@ -171,15 +204,15 @@ def run_task_service(
             trigger.clear()
             log.info("[DEBUG] 메인 스레드: trigger 수신, 작업 시작")
 
-            if not reset_env(controller):
+            if not reset_env(log):
                 task_result["success"] = False
                 task_result["message"] = "환경 리셋 실패"
                 log.info("[DEBUG] 메인 스레드: 리셋 실패, result_ready.set()")
                 result_ready.set()
                 continue
 
-            for _ in range(20):
-                rclpy.spin_once(controller, timeout_sec=0.1)
+            # background executor가 콜백 처리 중 — fresh state 도착 대기
+            time.sleep(0.2)
 
             # 매 trial 시작 전 그리퍼 열기 (이전 실패 시 닫힌 상태 방지)
             RobotSkills(controller).open_gripper()
@@ -220,6 +253,8 @@ def run_task_service(
     except KeyboardInterrupt:
         pass
 
+    service_executor.shutdown()
+    controller_executor.shutdown()
     service_node.destroy_node()
     controller.destroy_node()
     rclpy.shutdown()

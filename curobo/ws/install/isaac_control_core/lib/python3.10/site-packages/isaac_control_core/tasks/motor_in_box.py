@@ -10,7 +10,6 @@ evaluate: 박스 안에 들어갔으면 성공 (XY 가깝고, pick Z가 place Z�
 from __future__ import annotations
 
 import math
-import rclpy
 from typing import TYPE_CHECKING
 
 from isaac_control_core.core.task import BaseTask
@@ -72,8 +71,7 @@ class MotorInBoxTask(BaseTask):
             return False
 
         # 오브젝트 위치 최신화 (리셋 직후 stale 방지)
-        for _ in range(30):
-            rclpy.spin_once(self._controller, timeout_sec=0.05)
+        self._controller.sync_state(30)
 
         skills = RobotSkills(self._controller)
 
@@ -134,8 +132,7 @@ class MotorInBoxTask(BaseTask):
         """
         ctrl = self._controller
 
-        for _ in range(10):
-            rclpy.spin_once(ctrl, timeout_sec=0.1)
+        ctrl.sync_state(10, timeout=0.1)
 
         positions = ctrl.object_positions
         if self._pick_object not in positions or self._place_target not in positions:

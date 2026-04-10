@@ -39,7 +39,7 @@ def run(controller_class, args=None, **controller_kwargs):
         node_name="motor_in_box_service",
         **controller_kwargs,
     )
-    controller.wait_for_ready()
+    # wait_for_ready는 run_task_service 안에서 background spin 시작 후 호출됨
 
     run_task_service(
         controller=controller,

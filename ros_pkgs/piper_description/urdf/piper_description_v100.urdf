@@ -335,5 +335,15 @@
         <limit lower="-0.05" upper="0" effort="100" velocity="1" />
     </joint>
 
+    <!-- Tool Center Point: 두 finger의 grasp center.
+         link7/link8 origin과 동일한 위치 (link6 local +Z 0.135).
+         yourdfpy로 검증: 두 fingertip 중점이 정확히 이 점과 일치.
+         cuRobo, TF, RobotConfig 모두 이 frame을 ee로 사용. -->
+    <link name="tcp"/>
+    <joint name="joint_tcp" type="fixed">
+        <origin xyz="0 0 0.13503" rpy="0 0 0" />
+        <parent link="link6" />
+        <child link="tcp" />
+    </joint>
 
 </robot>

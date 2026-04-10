@@ -2,7 +2,7 @@
 
 그리퍼 개구: 0~0.05m (시뮬레이션), 실물 0~0.10m.
 gripper_base 링크 없음 — joint7/8이 link6에 직접 연결.
-tcp 링크 없음 — ee_frame = link6.
+ee_frame = tcp (URDF에 추가한 fixed link, link6 +Z 0.135 = grasp center).
 base 링크: arm_base.
 """
 
@@ -53,7 +53,9 @@ class PiperV100Config(RobotConfig):
 
     @property
     def ee_frame(self) -> str:
-        return "link6"
+        # tcp = link6 + fixed offset (0, 0, 0.135) = 두 finger의 grasp center.
+        # URDF, cuRobo yml, RobotConfig 모두 이 frame을 ee로 사용 → frame mismatch 없음.
+        return "tcp"
 
     @property
     def move_group_name(self) -> str:
@@ -61,7 +63,9 @@ class PiperV100Config(RobotConfig):
 
     @property
     def gripper_length(self) -> float:
-        return -0.05
+        # ee_frame이 'tcp' (= grasp center)이므로 추가 offset 불필요.
+        # descend_z = cube_z + grasp_offset + 0 → tcp가 cube center에 정확히 도달.
+        return 0.0
 
     @property
     def grasp_orientation(self) -> tuple[float, float, float, float]:

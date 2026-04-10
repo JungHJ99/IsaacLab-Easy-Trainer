@@ -99,9 +99,10 @@ BaseTask 서브클래스. `run()` = validate → execute → evaluate:
 
 ### Tasks 상세
 
-#### 오브젝트 위치 읽기 전 spin_once
-- `MotorInBoxTask`, `PickAndPlaceTask` 에서 오브젝트 위치를 읽기 전 `spin_once(30)` 호출
+#### 오브젝트 위치 읽기 전 sync_state
+- `MotorInBoxTask`, `PickAndPlaceTask` 에서 오브젝트 위치를 읽기 전 `controller.sync_state(30)` 호출
 - stale 데이터 방지: 시뮬레이션에서 물체 위치가 업데이트되기 전에 읽으면 오래된 위치를 사용하게 됨
+- `sync_state`는 단순 `time.sleep` — background executor가 콜백을 처리하므로 명시적 spin 불필요
 
 #### PickAndPlaceTask — align_orientation 파라미터
 
@@ -141,9 +142,49 @@ BaseTask 서브클래스. `run()` = validate → execute → evaluate:
 ### GripperScaleBridge (service_runner.py)
 
 시뮬 ↔ 실제 gripper 스케일 변환을 ROS 토픽 레벨에서 처리하는 클래스:
-- 구독: `/simulation/joint_states` (sim) → 실제 스케일로 변환하여 저장
-- 발행: `/simulation/joint_command` (sim) + `/joint_command` (real) 양쪽에 동시 발행
-- `_joint_state_cb` override: sim gripper 값을 real 스케일로 변환
+- 구독: `/simulation/joint_states` → republish to `/joint_states` (real 스케일)
+- 구독: `/simulation/joint_command` → republish to `/joint_command` (real 스케일)
+- **단일 책임**: `/joint_states` 외부 발행은 GripperScaleBridge가 전담
+  - `CuroboController._joint_state_cb`는 내부 `_current_joint_state` 갱신만 담당, 외부 발행 X
+  - 이전에는 양쪽에서 중복 발행하여 콜백 레이턴시가 늘어남
+
+## ROS2 Spin 아키텍처 (service_runner.py)
+
+### 핵심 원칙: 노드별 dedicated background spin
+
+- `service_node`와 `controller`는 **각각 별도의 `SingleThreadedExecutor`**에서 background spin
+- 같은 default executor를 공유하면 `ValueError: generator already executing` 발생
+- `MultiThreadedExecutor`로 두 노드를 묶는 방식도 가능하지만, 노드별 SingleThreadedExecutor가 더 안정적
+
+```python
+service_executor = SingleThreadedExecutor()
+service_executor.add_node(service_node)
+controller_executor = SingleThreadedExecutor()
+controller_executor.add_node(controller)
+threading.Thread(target=service_executor.spin, daemon=True).start()
+threading.Thread(target=controller_executor.spin, daemon=True).start()
+```
+
+### `wait_for_ready()` 호출 순서
+- **반드시 background spin 시작 *후*에 호출**해야 함
+- 만약 background spin 전에 `spin_once(controller)`를 부르면, 노드가 임시 default executor에 묶여
+  이후 background `controller_executor.spin()`이 효과 없음 (콜백이 처리되지 않아 `_current_joint_state` stale)
+- entry point (`pick_and_place_service.py` 등)에서 `controller.wait_for_ready()` 호출하지 말 것
+- `run_task_service` 내부에서 background spin 시작 후 호출
+
+### `MotionController._cb_group = ReentrantCallbackGroup()`
+- 모든 subscription이 ReentrantCallbackGroup에 묶여있음
+- joint_state, TF, marker 콜백이 서로를 막지 않고 동시 처리 가능
+
+### `reset_env()` 임시 노드 사용
+- controller가 background spin 중이므로 `rclpy.spin_until_future_complete(controller, ...)` 호출 시 generator 충돌
+- `reset_env`는 `_reset_env_client` 임시 노드를 만들어 service call 후 destroy
+- 임시 노드는 background spin과 분리되어 있어 안전하게 spin_until_future_complete 가능
+
+### controller 코드에서 명시적 spin 금지
+- `CuroboController` 내부에서 `rclpy.spin_once(self, ...)` 호출하지 말 것 (background executor와 충돌)
+- hold 루프는 `_publish_cmd + time.sleep`만 — 콜백 처리는 background executor가 담당
+- `sync_state()`도 `time.sleep(0.1)` 기반 polling일 뿐
 
 ## MotionController 플래너별 Property 차이
 
@@ -151,10 +192,15 @@ BaseTask 서브클래스. `run()` = validate → execute → evaluate:
 - **MoveIt (`MoveItController`)**: `True` — MoveIt은 orientation 보정이 필요 (Cartesian planning 시)
 - **cuRobo (`CuroboController`)**: `False` — cuRobo는 이미 orientation을 포함하여 planning하므로 보정 적용 시 config jump 발생
 
-### `gripper_length_override` property
-- `None`을 반환하면 `RobotConfig`의 기본값 사용 (PiperConfig: `-0.05`)
-- 특정 플래너에서 다른 gripper length가 필요한 경우에만 override
-- **cuRobo**: `-0.03` (MoveIt은 `None` — 기본값 사용)
+### `sync_state(n, timeout)` 메서드
+- 콜백 처리 대기용 헬퍼 — 단순히 `time.sleep(0.1)` 호출
+- background executor가 controller 콜백을 처리한다고 가정 (run_task_service에서 보장)
+- 명시적 `spin_once` 호출하지 않음 — executor와 충돌 방지
+- `n`, `timeout` 인자는 backward compat용으로 무시됨
+
+### `gripper_length` 설정
+- 플래너별 override 없이 **`RobotConfig.gripper_length` 단일 값** 사용
+- 플래너마다 다른 값이 필요하면 별도 RobotConfig 서브클래스를 만들 것
 
 ## Symlink 구조
 
