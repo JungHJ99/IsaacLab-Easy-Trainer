@@ -360,6 +360,9 @@ class MoveItController(MotionController):
 
     def _execute_trajectory(self, trajectory) -> bool:
         """RobotTrajectory를 FollowJointTrajectory 액션으로 실행."""
+        # 플래닝 완료 → 실제 모션 시작 직전에 /start_moving 발행 (arm 상태일 때만)
+        self.fire_start_moving()
+
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = trajectory.joint_trajectory
 

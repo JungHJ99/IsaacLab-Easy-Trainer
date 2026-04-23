@@ -73,10 +73,12 @@ class Pi0Env(BaseEnv):
                         position_range=[[0.2, -0.35, 0.052], [0.5, 0.35, 0.052]], orientation_range=[[0, 0, -135], [0, 0, -45]],
                         friction=3.0, mass=0.02)
         
-        self.add_bg_object("Clamp_bg", usd_path=str(USD_DIR / "clamp_for_robot.usd"),
-                           position=(-0.108, 0.00741, -0.02808), orientation=(-25.213, -75.653, -117.797), scale=0.6)
-        self.add_bg_object("GreyShelf", box_size=(0.3, 0.24, 0.02),
-                           position=(0.00943, -0.003, 0.0272))
+        self.add_object("Clamp_bg", usd_path=str(USD_DIR / "clamp_for_robot.usd"),
+                        position=(-0.108, 0.00741, -0.02808),
+                        orientation=(-25.213, -75.653, -117.797),
+                        scale=0.6, wrap_rigidbody=False)
+        self.add_object("GreyShelf", box_size=(0.3, 0.24, 0.02),
+                        position=(0.00943, -0.003, 0.0272))
 
         # 고정 카메라 (외부 시점)
         self.add_camera(
@@ -106,13 +108,18 @@ class Pi0Env(BaseEnv):
             focal_length=13.0,  # 초광각 (~120도 FOV)
         )
 
-        # 조명 도메인 랜덤화
-        self.set_lighting_randomization(
-            intensity_range=[1300, 2000],
-            color_temp_range=[5500, 6500],
-            additional_lights=2,
-            additional_intensity_range=[200, 800],
-        )
+        # 조명 (dome + 추가 distant 2개)
+        self.add_light(type="dome", name="DomeLight",
+                       intensity=1650, intensity_delta=350,
+                       color_temp=6000, color_temp_delta=500)
+        self.add_light(type="distant", name="DistantLight_0",
+                       intensity=500, intensity_delta=300,
+                       orientation=[0.0, 0.0, 0.0],
+                       orientation_delta=[60, 60, 180])
+        self.add_light(type="distant", name="DistantLight_1",
+                       intensity=500, intensity_delta=300,
+                       orientation=[0.0, 0.0, 180.0],
+                       orientation_delta=[60, 60, 180])
 
         # 배경 색상 랜덤화 (검정~진한 회색)
         self.set_background_randomization(brightness_range=[0.0, 0.3])

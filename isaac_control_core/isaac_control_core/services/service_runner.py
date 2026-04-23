@@ -234,6 +234,10 @@ def run_task_service(
                         RobotSkills(controller).open_gripper()
                 task_done.set()
 
+            # 다음 motion 실행 시점에 controller가 /start_moving 발행하도록 arm.
+            # (task 당 첫 motion의 plan→execute 전환점에서 1회 발행)
+            controller.arm_start_moving(service_label)
+
             task_thread = threading.Thread(target=_run_task, daemon=True)
             task_thread.start()
             finished = task_done.wait(timeout=timeout)

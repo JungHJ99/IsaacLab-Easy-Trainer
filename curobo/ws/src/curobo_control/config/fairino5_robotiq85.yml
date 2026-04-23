@@ -1,0 +1,27 @@
+##
+## Fairino FR5 + Robotiq 2F-85 configuration for cuRobo
+## ee_link: robotiq_85_base_link
+## gripper: robotiq_85_left_knuckle_joint (0~0.804 rad)
+##
+
+robot_cfg:
+  kinematics:
+    use_usd_kinematics: False
+    urdf_path: "/root/ws/src/fairino_description/urdf/fairino5_robotiq85.urdf"
+    asset_root_path: "/root/ws/src/fairino_description"
+    base_link: "base_link"
+    ee_link: "robotiq_85_base_link"
+    lock_joints:
+      robotiq_85_left_knuckle_joint: 0.0
+      robotiq_85_right_knuckle_joint: 0.0
+      robotiq_85_left_inner_knuckle_joint: 0.0
+      robotiq_85_right_inner_knuckle_joint: 0.0
+      robotiq_85_left_finger_tip_joint: 0.0
+      robotiq_85_right_finger_tip_joint: 0.0
+    cspace:
+      joint_names: ["j1", "j2", "j3", "j4", "j5", "j6"]
+      retract_config: [0.0, -1.57, 1.57, 0.0, 1.57, 0.0]
+      null_space_weight: [1, 1, 1, 1, 1, 1]
+      cspace_distance_weight: [1, 1, 1, 1, 1, 1]
+      max_acceleration: 10.0
+      max_jerk: 500.0

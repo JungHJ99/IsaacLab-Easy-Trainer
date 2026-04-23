@@ -55,13 +55,6 @@ class RobotSkills:
             self._logger.warn(f"EE position 조회 실패: {e}")
             return None
 
-    def _hold(self, duration: float = 0.3):
-        """현재 위치를 유지하며 대기. hold_position이 있으면 사용, 없으면 sleep."""
-        if hasattr(self._ctrl, 'hold_position'):
-            self._ctrl.hold_position(duration)
-        else:
-            time.sleep(duration)
-
     def get_object_position(self, name: str) -> tuple[float, float, float] | None:
         """오브젝트 마커 위치를 최신으로 갱신 후 반환."""
         self._ctrl.sync_state(10, timeout=0.1)
@@ -276,10 +269,8 @@ class RobotSkills:
 
         if not self.approach(x, y, z, height=approach_offset + gl, **ori):
             return False
-        self._hold(0.5)
         if not self.descend(x, y, z, height=grasp_offset + gl, **ori):
             return False
-        self._hold(0.5)
         self.close_gripper()
         if not self.lift(x, y, z, height=lift_offset + gl, **ori):
             return False
@@ -288,7 +279,9 @@ class RobotSkills:
     def place(self, x: float, y: float, z: float,
               approach_offset: float = 0.15,
               place_offset: float = 0.08,
-              lift_offset: float = 0.10) -> bool:
+              lift_offset: float = 0.10,
+              ox: float | None = None, oy: float | None = None,
+              oz: float | None = None, ow: float | None = None) -> bool:
         """오브젝트를 목표 위치에 놓기.
 
         approach → descend → open_gripper → retreat 시퀀스.
@@ -296,20 +289,23 @@ class RobotSkills:
         Args:
             x, y, z: 목표 위치.
             approach_offset, place_offset, lift_offset: z 오프셋 (gripper_length 별도 추가).
+            ox, oy, oz, ow: place orientation override (xyzw). None이면 기본 grasp_orientation 사용.
+                            pick 시 사용한 orientation과 일관성을 위해 전달.
         """
         gl = self.gripper_length
-        ori = self.grasp_ori_kwargs
+
+        if ox is not None:
+            ori = {"ox": ox, "oy": oy or 0.0, "oz": oz or 0.0, "ow": ow or 0.0}
+        else:
+            ori = self.grasp_ori_kwargs
 
         if not self.approach(x, y, z, height=approach_offset + gl, **ori):
             return False
-        # self._hold(0.1)
         if not self.descend(x, y, z, height=place_offset + gl, **ori):
             return False
-        # self._hold(0.1)
         self.open_gripper()
         if not self.lift(x, y, z, height=lift_offset + gl, **ori):
             return False
-        # self.retreat(x, y, z, height=lift_offset + gl, **ori)
         return True
 
     def place_on_object(self, held_object: str, target_object: str,

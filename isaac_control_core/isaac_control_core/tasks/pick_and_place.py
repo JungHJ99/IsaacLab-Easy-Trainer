@@ -43,11 +43,11 @@ class PickAndPlaceTask(BaseTask):
     ):
         """
         Args:
-            grasp_yaw: 그리퍼 yaw 설정.
-                - "auto": 오브젝트 yaw에 자동 정렬
-                - "vertical" 또는 90: 세로(90도) 방향으로 잡기
-                - "horizontal" 또는 0: 가로(0도) 방향으로 잡기 (기본 grasp)
-                - float: 지정한 각도(도)만큼 회전하여 잡기
+            grasp_yaw: 그리퍼 yaw 설정 (물체 yaw 기준 상대 각도).
+                - "auto": 오브젝트 X축에 정렬 (상대 0°, 물체 따라 회전)
+                - "horizontal" 또는 0: 가로 grip — fingers perpendicular to robot forward
+                - "vertical" 또는 90: 세로 grip — fingers along robot forward
+                - float: 지정한 각도(도)만큼 회전하여 잡기 (0=가로, 90=세로 기준)
         """
         super().__init__(controller)
         self._pick_object = pick_object
@@ -99,9 +99,14 @@ class PickAndPlaceTask(BaseTask):
         initial_joints = skills.get_current_arm_joints()
         self.logger.info(f"  초기 관절: {initial_joints}")
 
-        # grasp yaw 계산 (모두 물체 orientation 기준 상대각도)
+        # Piper gripper 기본 자세(Y-flip only, Z-rot=0)는 사용자 기준 "세로"임.
+        # yaw=0 → "가로" convention 맞추려면 Z rotation에 π/2 base offset 추가.
+        BASE_OFFSET = math.pi / 2
+
+        # grasp yaw 계산
         pick_ori_kwargs = {}
         grasp_yaw_rad = None
+        offset_rad = None
 
         # 물체의 world yaw 추출
         obj_yaw_rad = 0.0
@@ -113,28 +118,44 @@ class PickAndPlaceTask(BaseTask):
             obj_yaw_rad = math.atan2(local_x_in_world[1], local_x_in_world[0])
 
         if self._grasp_yaw == "auto":
-            # 오브젝트 yaw에 자동 정렬 (상대 오프셋 0)
-            grasp_yaw_rad = obj_yaw_rad
+            # 오브젝트 X축에 정렬: BASE_OFFSET 상쇄하여 기존 동작 유지
+            offset_rad = -BASE_OFFSET
         elif self._grasp_yaw == "horizontal":
-            grasp_yaw_rad = obj_yaw_rad + 0.0
+            offset_rad = 0.0
         elif self._grasp_yaw == "vertical":
-            grasp_yaw_rad = obj_yaw_rad + math.pi / 2
+            offset_rad = math.pi / 2
         elif isinstance(self._grasp_yaw, (int, float)):
-            grasp_yaw_rad = obj_yaw_rad + math.radians(float(self._grasp_yaw))
+            offset_rad = math.radians(float(self._grasp_yaw))
 
-        if grasp_yaw_rad is not None:
-            # 평행 그리퍼: yaw와 yaw+180°는 동일 grasp → [-90°, 90°]로 정규화
-            while grasp_yaw_rad > math.pi / 2:
+        if offset_rad is not None:
+            grasp_yaw_rad = obj_yaw_rad + offset_rad
+
+            # 평행 그리퍼 대칭 (yaw ≡ yaw + π) 을 이용해 offset_rad 근처에서 대표값 선택.
+            # 기존 코드는 anchor=0이어서 obj_yaw가 ±45° 범위에서 흔들릴 때 grasp_yaw가
+            # boundary(±π/2)를 넘나들며 joint6 target이 flip → "한바퀴 돌아서 잡는" 문제 발생.
+            # offset_rad anchor 로 바꾸면 같은 user intent 에 대해 연속적인 joint6 target 보장.
+            while grasp_yaw_rad - offset_rad > math.pi / 2:
                 grasp_yaw_rad -= math.pi
-            while grasp_yaw_rad < -math.pi / 2:
+            while grasp_yaw_rad - offset_rad < -math.pi / 2:
                 grasp_yaw_rad += math.pi
 
-            # top-down(Y축 180°) + Z축 yaw (gripper Z가 반전이므로 부호 반전)
-            aligned_rot = R.from_euler('YZ', [math.pi, -grasp_yaw_rad])
+            # top-down(Y축 180°) + Z축 yaw (gripper Z가 반전이므로 부호 반전).
+            # BASE_OFFSET 추가로 yaw=0 → 가로 grip convention 일치.
+            final_z_rot = grasp_yaw_rad + BASE_OFFSET
+
+            # 평행 그리퍼 대칭(target Z-rot ± π 는 동일 grasp) 을 이용해 |final_z_rot| 최소화.
+            # joint6 회전량 감소 → "한바퀴 돌려서 잡는" 현상 완화.
+            while final_z_rot > math.pi / 2:
+                final_z_rot -= math.pi
+            while final_z_rot < -math.pi / 2:
+                final_z_rot += math.pi
+
+            aligned_rot = R.from_euler('YZ', [math.pi, -final_z_rot])
             aq = aligned_rot.as_quat()  # xyzw
 
             pick_ori_kwargs = {"ox": aq[0], "oy": aq[1], "oz": aq[2], "ow": aq[3]}
             self.logger.info(f"  [grasp] yaw={math.degrees(grasp_yaw_rad):.1f}°, "
+                             f"final_z_rot={math.degrees(final_z_rot):.1f}°, "
                              f"ori=({aq[0]:.3f}, {aq[1]:.3f}, {aq[2]:.3f}, {aq[3]:.3f})")
 
         # Pick: approach → descend → close_gripper → lift
@@ -152,11 +173,13 @@ class PickAndPlaceTask(BaseTask):
         skills.go_to_joints(initial_joints)
 
         # Place: approach → descend → open_gripper → retreat
+        # pick 과 동일한 orientation 으로 place (세로/가로 grip 일관성 유지)
         self.logger.info(f"\n[Place] {self._place_target}")
         if not skills.place(px, py, pz,
                             approach_offset=APPROACH_OFFSET,
                             place_offset=PLACE_OFFSET,
-                            lift_offset=0.2):
+                            lift_offset=0.2,
+                            **pick_ori_kwargs):
             self.logger.error("Place 실패!")
             return False
 

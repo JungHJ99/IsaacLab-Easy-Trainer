@@ -1,0 +1,19 @@
+##
+## Fairino FR5 6-DOF robot configuration for cuRobo
+## No gripper — ee_link: wrist3_link
+##
+
+robot_cfg:
+  kinematics:
+    use_usd_kinematics: False
+    urdf_path: "/root/ws/src/fairino_description/urdf/fairino5_v6.urdf"
+    asset_root_path: "/root/ws/src/fairino_description"
+    base_link: "base_link"
+    ee_link: "wrist3_link"
+    cspace:
+      joint_names: ["j1", "j2", "j3", "j4", "j5", "j6"]
+      retract_config: [0.0, -1.57, 1.57, 0.0, 1.57, 0.0]
+      null_space_weight: [1, 1, 1, 1, 1, 1]
+      cspace_distance_weight: [1, 1, 1, 1, 1, 1]
+      max_acceleration: 10.0
+      max_jerk: 500.0

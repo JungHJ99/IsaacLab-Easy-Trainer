@@ -78,12 +78,15 @@ class PiperEnvCustom(BaseEnv):
                         orientation_range=[[-90, 0, -180], [-90, 0, -180]])
 
         # 배경 오브젝트 (물리 없음, 고정 위치)
-        # self.add_bg_object("Monitor_bg", usd_path=str(USD_DIR / "monitor.usd"),
-        #                    position=(0.4, -0.4, 0.201), orientation=(-90, 0, 180), scale=1.0)
-        self.add_bg_object("Clamp_bg", usd_path=str(USD_DIR / "clamp_for_robot.usd"),
-                           position=(-0.108, 0.00741, -0.02808), orientation=(-25.213, -75.653, -117.797), scale=0.6)
-        self.add_bg_object("GreyShelf", box_size=(0.3, 0.24, 0.02),
-                           position=(0.00943, -0.003, 0.0272))
+        # self.add_object("Monitor_bg", usd_path=str(USD_DIR / "monitor.usd"),
+        #                 position=(0.4, -0.4, 0.201), orientation=(-90, 0, 180), scale=1.0,
+        #                 wrap_rigidbody=False)
+        self.add_object("Clamp_bg", usd_path=str(USD_DIR / "clamp_for_robot.usd"),
+                        position=(-0.108, 0.00741, -0.02808),
+                        orientation=(-25.213, -75.653, -117.797),
+                        scale=0.6, wrap_rigidbody=False)
+        self.add_object("GreyShelf", box_size=(0.3, 0.24, 0.02),
+                        position=(0.00943, -0.003, 0.0272))
 
         # 고정 카메라 (외부 시점)
         self.add_camera(
@@ -102,13 +105,18 @@ class PiperEnvCustom(BaseEnv):
             name="wrist_cam",
         )
 
-        # 조명 도메인 랜덤화
-        self.set_lighting_randomization(
-            intensity_range=[800, 2500],
-            color_temp_range=[3500, 6500],
-            additional_lights=2,
-            additional_intensity_range=[200, 800],
-        )
+        # 조명 (dome + 추가 distant 2개)
+        self.add_light(type="dome", name="DomeLight",
+                       intensity=1650, intensity_delta=850,
+                       color_temp=5000, color_temp_delta=1500)
+        self.add_light(type="distant", name="DistantLight_0",
+                       intensity=500, intensity_delta=300,
+                       orientation=[0.0, 0.0, 0.0],
+                       orientation_delta=[60, 60, 180])
+        self.add_light(type="distant", name="DistantLight_1",
+                       intensity=500, intensity_delta=300,
+                       orientation=[0.0, 0.0, 180.0],
+                       orientation_delta=[60, 60, 180])
 
 
 if __name__ == "__main__":

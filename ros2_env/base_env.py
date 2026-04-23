@@ -41,7 +41,7 @@ class BaseEnv:
         self._mimic_joints = []  # (source_joint_prim, target_joint_prim, multiplier, offset)
         self._mimic_joint_names = {}  # {mimic_name: (source_name, multiplier, offset)}
         self._relay_node = None
-        self._lighting_randomization = None  # dict: intensity_range, color_temp_range 등
+        self._lights = []  # list of dicts: {name, prim_path, type, base_intensity, intensity_delta, ...}
         self._background_randomization = None
 
     def _setup_rendering(self):
@@ -154,6 +154,25 @@ class BaseEnv:
                     self._app.update()
             else:
                 print(f"[INFO] ArticulationRootAPI 확인됨: {prim_path}")
+
+        # 중첩 ArticulationRootAPI 제거: URDF importer가 최상위 prim과
+        # 내부 링크 prim 양쪽에 API를 적용하는 경우가 있어
+        # PhysX의 "Nested articulation roots are not allowed" 에러를 유발한다.
+        # 최상위(루트)만 남기고 descendant에서 API를 제거한다.
+        if prim.IsValid() and prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+            stripped = []
+            for desc in stage.Traverse():
+                desc_path = desc.GetPath()
+                if desc_path == prim.GetPath():
+                    continue
+                if not desc_path.HasPrefix(prim.GetPath()):
+                    continue
+                if desc.HasAPI(UsdPhysics.ArticulationRootAPI):
+                    desc.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+                    desc.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
+                    stripped.append(str(desc_path))
+            if stripped:
+                print(f"[WARN] 중첩 ArticulationRootAPI 제거: {stripped}")
 
         # 로봇 위치 설정 (URDF 임포트가 이미 translate op을 생성하므로 기존 op 재사용)
         if position is not None:
@@ -357,50 +376,81 @@ class BaseEnv:
         self._obj_manager = ObjectManager(stage, self._table_center, self._table_scale,
                                           spawn_range=spawn_range)
 
-    def add_object(self, name: str, size: float = 0.06,
+    def add_object(self, name: str, size: float | None = None,
                    color: tuple | None = None, shape: str = "cube",
                    height: float | None = None,
                    usd_path: str | None = None, scale: float = 1.0,
+                   box_size: tuple | None = None,
+                   position: tuple | None = None,
+                   orientation: tuple | None = None,
                    position_range: list | None = None,
                    orientation_range: list | None = None,
+                   position_delta: tuple | None = None,
+                   orientation_delta: tuple | None = None,
+                   scale_delta: float | None = None,
+                   wrap_rigidbody: bool | None = None,
                    deformable: float | None = None,
                    collision_approximation: str = "convexHull",
                    friction: float = 1.0,
                    mass: float | None = None):
-        """테이블 위 오브젝트를 추가 (add_table 이후 호출).
+        """씬에 오브젝트를 추가 (add_table 이후 호출).
 
-        프리미티브: add_object("Cube", size=0.05, shape="cube")
-        USD 에셋:  add_object("Mug", usd_path="/path/to/mug.usd", size=0.1, scale=0.01)
-        size: 겹침 방지 거리 계산용 (scale 적용 후 실제 크기에 맞게 설정).
-        position_range: [[x_max, y_max], [x_min, y_min]]. None이면 테이블 기본 범위.
-        orientation_range: [[rx_min, ry_min, rz_min], [rx_max, ry_max, rz_max]] 도 단위.
-        deformable: 0.0~1.0 부드러움 정도. 0.0=매우 부드러움, 1.0=단단함. None이면 rigid body.
-        collision_approximation: 충돌 근사 방식.
-        friction: 마찰 계수 (기본 1.0). 잡기 어려운 물체는 2.0~5.0으로 높이기.
-        mass: 질량 (kg). None이면 자동 계산. 가벼울수록 잡기 쉬움.
+        지오메트리 (택일):
+            shape+size  : 프리미티브 cube/sphere/cylinder
+            usd_path    : USD 에셋 reference
+            box_size    : (x,y,z) 장식용 직육면체 (물리 없음)
+
+        배치 (택일):
+            position         : (x,y,z) 고정 위치 — 매 reset마다 원 위치로 복원
+            position + position_delta : position ± delta 범위 내 랜덤 (권장)
+            position_range   : [[x_min,y_min,z],[x_max,y_max,z]] 범위 내 랜덤 (레거시)
+            (모두 None이면 테이블 기본 범위에서 랜덤)
+
+        랜덤화 (모두 선택):
+            position_delta    : (dx, dy, dz). position 기준 ±delta 범위 내 랜덤.
+            orientation_delta : (droll, dpitch, dyaw). orientation 기준 ±delta 범위 내 랜덤 (도).
+            scale_delta       : 단일 float. scale 기준 ±delta 범위 내 랜덤.
+
+        물리 래핑 (wrap_rigidbody):
+            None  = 자동 감지 (box_size/articulated USD → False, 그 외 True)
+            True  = 최상위 prim에 RigidBody/Collision/Material 부착 (단일 강체 조작 대상)
+            False = USD 내부 물리 유지 (서랍장/노트북 등 articulated 에셋, 또는 장식)
+
+        예:
+            add_object("Cube", size=0.05, shape="cube")
+            add_object("Mug", usd_path="...", size=0.1, scale=0.01)
+            add_object("Cabinet", usd_path="...", position=(1.1, 0, 0))  # 자동으로 non-wrap
+            add_object("Shelf", box_size=(0.4, 0.3, 0.02), position=(0.3, 0, 0.1))
         """
         if self._obj_manager is None:
             raise RuntimeError("add_table()을 먼저 호출하세요.")
-        self._obj_manager.add_object(name, size, color, shape, height, usd_path, scale,
-                                     position_range, orientation_range, deformable,
-                                     collision_approximation, friction, mass)
 
-    def add_bg_object(self, name: str, usd_path: str | None = None,
-                      position: tuple = (0.0, 0.0, 0.0),
-                      orientation: tuple | None = None,
-                      scale: float = 1.0,
-                      box_size: tuple | None = None,
-                      color: tuple = (0.5, 0.5, 0.5)):
-        """물리 없이 고정 배치되는 배경 오브젝트를 추가.
+        # delta → range 변환 (position_range / orientation_range가 명시되지 않았을 때만)
+        if position_range is None and position is not None and position_delta is not None:
+            position_range = [
+                [float(position[i]) - float(position_delta[i]) for i in range(3)],
+                [float(position[i]) + float(position_delta[i]) for i in range(3)],
+            ]
+        if orientation_range is None and orientation is not None and orientation_delta is not None:
+            orientation_range = [
+                [float(orientation[i]) - float(orientation_delta[i]) for i in range(3)],
+                [float(orientation[i]) + float(orientation_delta[i]) for i in range(3)],
+            ]
+        scale_range = None
+        if scale_delta is not None and float(scale_delta) > 1e-9:
+            sd = float(scale_delta)
+            scale_range = (max(1e-3, scale - sd), scale + sd)
 
-        USD 에셋:  add_bg_object("Lamp", usd_path="/path/to/lamp.usd", position=(0.5, 0.3, 0.032))
-        직육면체:  add_bg_object("Shelf", box_size=(0.4, 0.3, 0.02), position=(0.3, 0, 0.1), color=(0.5, 0.5, 0.5))
-        """
-        if self._obj_manager is None:
-            raise RuntimeError("add_table()을 먼저 호출하세요.")
-        self._obj_manager.add_bg_object(name, usd_path, position=position,
-                                        orientation=orientation, scale=scale,
-                                        box_size=box_size, color=color)
+        self._obj_manager.add_object(
+            name, size=size, color=color, shape=shape, height=height,
+            usd_path=usd_path, scale=scale, box_size=box_size,
+            position=position, orientation=orientation,
+            position_range=position_range, orientation_range=orientation_range,
+            scale_range=scale_range,
+            wrap_rigidbody=wrap_rigidbody, deformable=deformable,
+            collision_approximation=collision_approximation,
+            friction=friction, mass=mass,
+        )
 
     def add_camera(self, position: list, orientation: list | None = None,
                    resolution: tuple = (640, 480), freq: int = 30,
@@ -451,6 +501,11 @@ class BaseEnv:
         import omni.usd
         stage = omni.usd.get_context().get_stage()
         prim = stage.GetPrimAtPath(camera_path)
+        if not prim.IsValid():
+            raise RuntimeError(
+                f"Camera prim 생성 실패: {camera_path} "
+                f"(parent_prim={parent_prim!r} 경로가 존재하지 않을 가능성)"
+            )
         xform = UsdGeom.Xformable(prim)
         xform.ClearXformOpOrder()
         xform.AddTranslateOp().Set(Gf.Vec3d(*position))
@@ -513,78 +568,115 @@ class BaseEnv:
                         op.Set(Gf.Vec3f(*new_ori))
                         break
 
-    def set_lighting_randomization(self,
-                                   intensity_range: list | None = None,
-                                   color_temp_range: list | None = None,
-                                   additional_lights: int = 0,
-                                   additional_intensity_range: list | None = None):
-        """리셋 시 조명 랜덤화 설정.
+    def add_light(self, type: str = "dome", name: str | None = None,
+                  intensity: float = 1500.0,
+                  color_temp: float | None = None,
+                  orientation: list | None = None,
+                  intensity_delta: float | None = None,
+                  color_temp_delta: float | None = None,
+                  orientation_delta: list | None = None):
+        """조명을 추가 (add_camera, add_object와 동일한 선언적 패턴).
 
         Args:
-            intensity_range: DomeLight intensity [min, max]. 예: [800, 2500].
-            color_temp_range: 색온도 [min, max] Kelvin. 예: [3500, 6500].
-                              3500=따뜻한 노란빛, 6500=차가운 흰빛.
-            additional_lights: 추가 DistantLight 개수 (랜덤 방향). 0이면 DomeLight만.
-            additional_intensity_range: 추가 조명 intensity [min, max]. 예: [200, 800].
+            type: "dome" (ambient DomeLight) or "distant" (directional DistantLight).
+            name: 조명 이름. None이면 자동 생성.
+            intensity: 기본 intensity.
+            color_temp: 색온도 (Kelvin). 3500=따뜻한 노란빛, 6500=차가운 흰빛.
+                        None이면 색온도 미설정 (흰 빛).
+            orientation: [roll, pitch, yaw] 도 단위. DistantLight 방향 (dome은 무시).
+            intensity_delta: ±delta 범위에서 리셋 시 intensity 랜덤.
+            color_temp_delta: ±delta 범위에서 리셋 시 색온도 랜덤 (color_temp 지정 시).
+            orientation_delta: [droll, dpitch, dyaw] ±delta 범위에서 orientation 랜덤.
         """
-        self._lighting_randomization = {
-            "intensity_range": intensity_range or [1000, 2000],
-            "color_temp_range": color_temp_range,
-            "additional_lights": additional_lights,
-            "additional_intensity_range": additional_intensity_range or [200, 800],
-        }
+        import omni.kit.commands
+        import omni.usd
+        from pxr import Gf, UsdGeom, UsdLux
+        stage = omni.usd.get_context().get_stage()
+
+        light_name = name or f"light_{len(self._lights)}"
+        light_path = f"/World/{light_name}"
+
+        if type == "dome":
+            omni.kit.commands.execute(
+                "CreatePrim",
+                prim_path=light_path,
+                prim_type="DomeLight",
+                attributes={"inputs:intensity": intensity},
+            )
+        elif type == "distant":
+            prim = UsdLux.DistantLight.Define(stage, light_path).GetPrim()
+            prim.GetAttribute("inputs:intensity").Set(intensity)
+        else:
+            raise ValueError(f"Unknown light type: {type!r}. Use 'dome' or 'distant'.")
+
+        prim = stage.GetPrimAtPath(light_path)
+        if color_temp is not None:
+            prim.GetAttribute("inputs:enableColorTemperature").Set(True)
+            prim.GetAttribute("inputs:colorTemperature").Set(float(color_temp))
+
+        if orientation is not None and type == "distant":
+            xform = UsdGeom.Xformable(prim)
+            xform.ClearXformOpOrder()
+            xform.AddRotateXYZOp().Set(Gf.Vec3f(*orientation))
+
+        self._lights.append({
+            "name": light_name,
+            "prim_path": light_path,
+            "type": type,
+            "base_intensity": float(intensity),
+            "intensity_delta": intensity_delta,
+            "base_color_temp": float(color_temp) if color_temp is not None else None,
+            "color_temp_delta": color_temp_delta,
+            "base_orientation": list(orientation) if orientation is not None else None,
+            "orientation_delta": orientation_delta,
+        })
+        print(f"[INFO] Light 추가: {light_name} (type={type}, intensity={intensity})")
 
     def _randomize_lighting(self):
-        """리셋 시 조명 랜덤화 실행."""
-        if self._lighting_randomization is None:
+        """리셋 시 등록된 조명들을 순회하며 intensity/color_temp/orientation 랜덤화."""
+        if not self._lights:
             return
 
         import random
-        from pxr import UsdLux
+        from pxr import Gf, UsdGeom
         import omni.usd
         stage = omni.usd.get_context().get_stage()
 
-        cfg = self._lighting_randomization
+        for light in self._lights:
+            prim = stage.GetPrimAtPath(light["prim_path"])
+            if not prim.IsValid():
+                continue
 
-        # DomeLight intensity 랜덤화
-        dome = stage.GetPrimAtPath("/World/DomeLight")
-        if dome.IsValid():
-            lo, hi = cfg["intensity_range"]
-            intensity = random.uniform(lo, hi)
-            dome.GetAttribute("inputs:intensity").Set(intensity)
-
-            # 색온도 랜덤화
-            if cfg["color_temp_range"] is not None:
-                lo_t, hi_t = cfg["color_temp_range"]
-                temp = random.uniform(lo_t, hi_t)
-                dome.GetAttribute("inputs:enableColorTemperature").Set(True)
-                dome.GetAttribute("inputs:colorTemperature").Set(temp)
-
-        # 추가 DistantLight 랜덤화 (방향 + intensity)
-        n_lights = cfg["additional_lights"]
-        if n_lights > 0:
-            from pxr import Gf, UsdGeom
-            int_lo, int_hi = cfg["additional_intensity_range"]
-
-            for i in range(n_lights):
-                light_path = f"/World/RandomLight_{i}"
-                light_prim = stage.GetPrimAtPath(light_path)
-
-                if not light_prim.IsValid():
-                    # 첫 리셋 시 생성
-                    light_prim = UsdLux.DistantLight.Define(stage, light_path).GetPrim()
-
-                light_prim.GetAttribute("inputs:intensity").Set(
-                    random.uniform(int_lo, int_hi)
+            if light["intensity_delta"] is not None:
+                base = light["base_intensity"]
+                d = float(light["intensity_delta"])
+                prim.GetAttribute("inputs:intensity").Set(
+                    max(0.0, random.uniform(base - d, base + d))
                 )
 
-                xform = UsdGeom.Xformable(light_prim)
-                xform.ClearXformOpOrder()
-                xform.AddRotateXYZOp().Set(Gf.Vec3f(
-                    random.uniform(-60, 60),
-                    random.uniform(-60, 60),
-                    random.uniform(0, 360),
-                ))
+            if light["color_temp_delta"] is not None and light["base_color_temp"] is not None:
+                base = light["base_color_temp"]
+                d = float(light["color_temp_delta"])
+                prim.GetAttribute("inputs:enableColorTemperature").Set(True)
+                prim.GetAttribute("inputs:colorTemperature").Set(
+                    random.uniform(base - d, base + d)
+                )
+
+            if (light["orientation_delta"] is not None
+                    and light["base_orientation"] is not None
+                    and light["type"] == "distant"):
+                base = light["base_orientation"]
+                d = light["orientation_delta"]
+                new_ori = [base[i] + random.uniform(-d[i], d[i]) for i in range(3)]
+                xform = UsdGeom.Xformable(prim)
+                found = False
+                for op in xform.GetOrderedXformOps():
+                    if op.GetOpName() == "xformOp:rotateXYZ":
+                        op.Set(Gf.Vec3f(*new_ori))
+                        found = True
+                        break
+                if not found:
+                    xform.AddRotateXYZOp().Set(Gf.Vec3f(*new_ori))
 
     def set_background_randomization(self, brightness_range: list | None = None):
         """리셋 시 배경(바닥+DomeLight) 색상을 랜덤 흑백으로 변경.
@@ -662,20 +754,20 @@ class BaseEnv:
         mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI(floor.GetPrim()).Bind(mat)
 
-        # 조명
-        omni.kit.commands.execute(
-            "CreatePrim",
-            prim_path="/World/DomeLight",
-            prim_type="DomeLight",
-            attributes={"inputs:intensity": 1500.0},
-        )
-
-        # 서브클래스에서 씬 구성
+        # 서브클래스에서 씬 구성 (로봇/테이블/조명 등은 여기서 add_light로 추가)
         self.setup_scene()
+
+        # setup_scene에서 조명을 하나도 추가하지 않았으면 기본 DomeLight를 자동 추가
+        # (기존 동작 호환성 유지 — 조명 없이 씬이 완전히 어두워지는 것을 방지)
+        if not self._lights:
+            self.add_light(type="dome", name="DomeLight", intensity=1500.0)
 
         # 로봇을 world에 추가
         if self._robot is not None:
             world.scene.add(self._robot)
+
+        # world.reset 이전에 중첩 articulation root 점검 (physics init 시 segfault 방지)
+        self._audit_articulation_roots()
 
         world.reset()
 
@@ -712,6 +804,9 @@ class BaseEnv:
 
         self._print_status()
 
+        # 플레이 전 중첩 articulation root 진단 (segfault 방지)
+        self._audit_articulation_roots()
+
         # 시뮬레이션 루프
         was_stopped = False
         while self._app.is_running():
@@ -720,6 +815,8 @@ class BaseEnv:
                 world.step(render=True)
                 continue
             if was_stopped:
+                # Play 전환 시 재-검증 (articulation root가 다시 생겼을 가능성)
+                self._audit_articulation_roots()
                 world.reset()
                 if self._obj_manager:
                     self._obj_manager.randomize_all()
@@ -885,6 +982,44 @@ class BaseEnv:
                 ros2_bridge.publish_depth(cam, freq)
             if cam_info["pointcloud"]:
                 ros2_bridge.publish_pointcloud(cam, freq)
+
+    def _audit_articulation_roots(self):
+        """전 stage를 훑어서 ArticulationRootAPI가 적용된 prim을 모두 출력하고,
+        중첩된 root가 있으면 자동으로 descendant의 API를 제거한다.
+
+        PhysX는 'Nested articulation roots are not allowed' 에러에서 바로
+        segfault로 이어지므로, 플레이 전에 미리 정리해준다.
+        """
+        import omni.usd
+        from pxr import UsdPhysics, PhysxSchema
+        stage = omni.usd.get_context().get_stage()
+
+        roots = []
+        for prim in stage.Traverse():
+            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                roots.append(prim)
+
+        if not roots:
+            print("[INFO] ArticulationRootAPI 보유 prim 없음")
+            return
+
+        paths = [str(p.GetPath()) for p in roots]
+        print(f"[INFO] ArticulationRoot prim ({len(roots)}개): {paths}")
+
+        root_paths = [p.GetPath() for p in roots]
+        removed = []
+        for i, p_i in enumerate(root_paths):
+            for j, p_j in enumerate(root_paths):
+                if i == j:
+                    continue
+                if p_j.HasPrefix(p_i) and p_j != p_i:
+                    desc = roots[j]
+                    if desc.HasAPI(UsdPhysics.ArticulationRootAPI):
+                        desc.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+                        desc.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
+                        removed.append(str(p_j))
+        if removed:
+            print(f"[WARN] 중첩 ArticulationRootAPI 제거 (audit): {removed}")
 
     def _print_status(self):
         """시작 시 상태 출력."""

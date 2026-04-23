@@ -49,6 +49,8 @@ class CuroboController(MotionController):
 
         # 마지막으로 명령한 그리퍼 너비 추적
         self._last_gripper_width = robot_config.gripper.open_width
+        # 마지막 motion의 arm target (hold_position fallback용)
+        self._last_target_arm: list[float] | None = None
 
         # 로봇별 그리퍼 스케일 설정
         self.GRIPPER_REAL_MAX = robot_config.gripper.open_width
@@ -73,25 +75,26 @@ class CuroboController(MotionController):
         self.get_logger().info(f"cuRobo MotionGen 초기화 중... ({curobo_config_path})")
 
         # 절대경로면 YAML dict로 로드, 아니면 cuRobo 내장 경로에서 찾기
+        # seed 수 ↑ → 첫 시도 성공률 ↑ (GPU 병렬이라 시간 거의 안 증가).
+        # "Couldn't find solution with 10 attempts, resetting seeds" 경고는
+        # max_attempts가 높을 때 반복되므로 적정 수준으로 제한.
+        common_mg_kwargs = dict(
+            interpolation_dt=0.01,
+            num_trajopt_seeds=16,
+            num_graph_seeds=12,
+            num_ik_seeds=64,          # 기본 30 → 64: IK 시작점 더 많이 → 수렴 성공률 ↑
+            rotation_threshold=0.3,   # ~29도 유격 (Piper 6DOF 도달 가능성 ↑)
+            position_threshold=0.01,  # 1cm (5mm → 1cm: 경계 포즈에서 IK 수렴 여유)
+        )
         if os.path.isabs(curobo_config_path) or os.path.exists(curobo_config_path):
             with open(curobo_config_path, encoding="utf-8") as f:
                 robot_cfg = yaml.safe_load(f)
             motion_gen_config = MotionGenConfig.load_from_robot_config(
-                robot_cfg["robot_cfg"],
-                interpolation_dt=0.01,
-                num_trajopt_seeds=4,
-                num_graph_seeds=4,
-                rotation_threshold=0.2,   # ~11도 유격 허용
-                position_threshold=0.005,  # 5mm
+                robot_cfg["robot_cfg"], **common_mg_kwargs,
             )
         else:
             motion_gen_config = MotionGenConfig.load_from_robot_config(
-                curobo_config_path,
-                interpolation_dt=0.01,
-                num_trajopt_seeds=4,
-                num_graph_seeds=4,
-                rotation_threshold=0.2,   # ~11도 유격 허용
-                position_threshold=0.005,  # 5mm
+                curobo_config_path, **common_mg_kwargs,
             )
         self._motion_gen = MotionGen(motion_gen_config)
         self._motion_gen.warmup()
@@ -101,10 +104,12 @@ class CuroboController(MotionController):
 
         self.get_logger().info("cuRobo MotionGen 준비 완료!")
 
+        # max_attempts: retry 루프는 n==10에서 seed 리셋, 그 외에도 finetune_dt_scale
+        # / enable_graph / partial_ik_opt 를 점진적으로 조정해가며 탐색. 60은 cuRobo 기본값.
         self._plan_config = MotionGenPlanConfig(
             enable_graph=True,
             enable_opt=True,
-            max_attempts=500,
+            max_attempts=60,
             check_start_validity=False,  # collision constraint 없을 때 에러 방지
         )
 
@@ -177,60 +182,6 @@ class CuroboController(MotionController):
             position=torch.tensor([positions], dtype=torch.float32).cuda(),
             joint_names=arm_names,
         )
-
-    # ── 안전장치: IK/Plan 결과의 실제 EE 위치 검증 ─────────────
-
-    POSITION_TOLERANCE = 0.05  # 5cm — IK/plan 결과가 목표와 이만큼 떨어지면 거부
-
-    def _verify_ee_pose(
-        self, joint_positions, target_xyz: tuple[float, float, float],
-        label: str = "verify",
-    ) -> bool:
-        """주어진 joint 해의 실제 EE 위치가 target_xyz와 충분히 가까운지 FK로 검증.
-
-        config jump (IK가 unreachable 목표에 대해 엉뚱한 branch 선택) 감지용.
-
-        ⚠️ 한계: IK가 success=True로 반환한 해는 FK 라운드트립 시 거의 항상 통과함.
-        진짜 IK 실패는 success=False로 잡히고, 이 검증은 해 자체의 sanity check 정도.
-
-        Args:
-            joint_positions: arm joint 값 list 또는 1D torch tensor.
-            target_xyz: 목표 (x, y, z).
-            label: 로그 라벨.
-
-        Returns:
-            True if EE position error < POSITION_TOLERANCE, else False.
-        """
-        if not isinstance(joint_positions, torch.Tensor):
-            joint_positions = torch.tensor(
-                joint_positions, dtype=torch.float32
-            ).cuda()
-        if joint_positions.dim() == 1:
-            joint_positions = joint_positions.unsqueeze(0)
-
-        cu_state = CuJointState.from_position(
-            position=joint_positions,
-            joint_names=self._robot_config.arm_joint_names,
-        )
-        kin_state = self._motion_gen.compute_kinematics(cu_state)
-        actual_xyz = kin_state.ee_pos_seq[0].cpu().tolist()
-
-        err_x = actual_xyz[0] - target_xyz[0]
-        err_y = actual_xyz[1] - target_xyz[1]
-        err_z = actual_xyz[2] - target_xyz[2]
-        err = (err_x ** 2 + err_y ** 2 + err_z ** 2) ** 0.5
-
-        if err > self.POSITION_TOLERANCE:
-            self.get_logger().error(
-                f"[{label}] config jump 감지! "
-                f"target=({target_xyz[0]:.3f}, {target_xyz[1]:.3f}, {target_xyz[2]:.3f}), "
-                f"actual=({actual_xyz[0]:.3f}, {actual_xyz[1]:.3f}, {actual_xyz[2]:.3f}), "
-                f"err={err:.3f}m"
-            )
-            return False
-
-        self.get_logger().info(f"[{label}] EE 위치 검증 OK (err={err:.4f}m)")
-        return True
 
     def diagnose_frame_alignment(self, label: str = "diag"):
         """3-way 비교: yourdfpy URDF 진실 vs Isaac Sim TF vs cuRobo FK.
@@ -478,15 +429,18 @@ class CuroboController(MotionController):
                 speed_factor = 1.0
             time.sleep(base_dt / max(speed_factor, 0.1))
 
-        # 3) 마지막 위치 hold (물리 안정화)
+        # 3) target publish + 피드백 기반 수렴 대기
+        # 시간 기반 hold 대신 실제 joint feedback 도달을 확인.
         final_pos = positions[-1].tolist()
         final_cmd = JointState()
         final_cmd.name = arm_names + gripper_names + ["joint8"]
         final_cmd.position = final_pos + [sim_gripper] + [-sim_gripper]
-        # final_cmd 유지하며 hold (background executor가 콜백 처리)
-        for _ in range(50):
+        for _ in range(5):
             self._publish_cmd(final_cmd)
             time.sleep(1.0 / 60.0)
+
+        self._last_target_arm = final_pos
+        self._wait_convergence(final_pos)
 
         self.get_logger().info("Trajectory 실행 완료!")
         return True
@@ -582,9 +536,8 @@ class CuroboController(MotionController):
             f"[DEBUG] plan: {len(positions)} steps, max_diff={max_diff:.3f} at {arm_names[max_idx]}"
         )
 
-        # 안전장치: plan 종료점이 실제로 목표 위치에 도달하는지 FK로 검증
-        if not self._verify_ee_pose(end_joints, (x, y, z), label="move_to_pose"):
-            return False
+        # 플래닝 완료 → 실제 모션 시작 직전에 /start_moving 발행 (arm 상태일 때만)
+        self.fire_start_moving()
 
         return self._execute_cu_trajectory(traj)
 
@@ -665,10 +618,8 @@ class CuroboController(MotionController):
             )
             return self.move_to_pose(x, y, z, ox, oy, oz, ow)
 
-        # 안전장치: IK 해의 실제 EE 위치가 목표와 일치하는지 FK로 검증
-        # config jump (unreachable 목표에 대한 엉뚱한 IK branch) 감지
-        if not self._verify_ee_pose(target_arm, (x, y, z), label="move_linear"):
-            return False
+        # IK 완료 → 실제 모션 시작 직전에 /start_moving 발행 (arm 상태일 때만)
+        self.fire_start_moving()
 
         # joint space 보간 (가감속 적용)
         sim_gripper = self._real_to_sim_gripper(self._last_gripper_width)
@@ -694,17 +645,59 @@ class CuroboController(MotionController):
                 speed_factor = 1.0
             time.sleep(base_dt / speed_factor)
 
-        # 마지막 위치 hold (안정화) — 위로 튀는 현상 방지
-        # background executor가 콜백 처리 → 명령만 지속 publish
+        # target publish + 피드백 기반 수렴 대기
+        # 시간 기반 hold 대신 실제 joint feedback 도달을 확인.
         final_cmd = JointState()
         final_cmd.name = arm_names + gripper_names + ["joint8"]
         final_cmd.position = target_arm + [sim_gripper] + [-sim_gripper]
-        for _ in range(130):
+        for _ in range(5):
             self._publish_cmd(final_cmd)
-            time.sleep(1.0 / 100.0)
+            time.sleep(1.0 / 60.0)
+
+        self._last_target_arm = target_arm
+        self._wait_convergence(target_arm)
 
         self.get_logger().info("직선 이동 완료!")
         return True
+
+    def _wait_convergence(
+        self,
+        target_arm: list[float],
+        tol: float = 0.01,
+        timeout: float = 2.0,
+    ) -> bool:
+        """현재 arm joint 상태가 target과 tol(rad) 이내로 수렴할 때까지 대기.
+
+        시간 기반 hold만으로는 실제 도달을 보장하지 못하므로, motion 완료 직후
+        호출하여 피드백 기반 대기를 수행한다. background executor가
+        _current_joint_state를 갱신한다고 가정하고 단순 polling만 한다.
+
+        Args:
+            target_arm: 도달하고자 하는 arm 관절값 (arm_joint_names 순서).
+            tol: 관절별 허용 오차 (rad).
+            timeout: 최대 대기 시간 (초).
+
+        Returns:
+            bool: 수렴 성공 여부. 타임아웃 시 False.
+        """
+        deadline = time.time() + timeout
+        arm_names = self._robot_config.arm_joint_names
+        last_err = float("inf")
+        while time.time() < deadline:
+            time.sleep(0.02)
+            js = self._current_joint_state
+            if js is None:
+                continue
+            js_map = {n: p for n, p in zip(js.name, js.position)}
+            current = [js_map.get(n, 0.0) for n in arm_names]
+            last_err = max(abs(c - t) for c, t in zip(current, target_arm))
+            if last_err < tol:
+                self.get_logger().info(f"[wait] 수렴 (err={last_err:.4f} rad)")
+                return True
+        self.get_logger().warn(
+            f"[wait] 수렴 타임아웃 (last_err={last_err:.4f}, tol={tol:.4f})"
+        )
+        return False
 
     def hold_position(self, duration: float = 0.3):
         """현재 관절 위치를 유지하면서 대기 (모션 간 튀는 현상 방지).

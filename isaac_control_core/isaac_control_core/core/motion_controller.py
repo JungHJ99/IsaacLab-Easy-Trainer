@@ -13,6 +13,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 from visualization_msgs.msg import Marker
 from tf2_ros import Buffer
 from tf2_msgs.msg import TFMessage
@@ -79,6 +80,14 @@ class MotionController(Node, ABC):
             )
 
         self._tracked_objects = list(object_names or [])
+
+        # /start_moving 이벤트 (녹화 노드 트리거용).
+        # arm_start_moving()으로 arm하면, 다음 motion의 plan→execute 전환점에
+        # fire_start_moving()이 1회만 발행하고 플래그를 클리어한다.
+        # 실제 발행 지점은 서브클래스(move_to_pose / move_linear)에서 호출.
+        self._start_moving_pub = self.create_publisher(String, "/start_moving", 10)
+        self._start_moving_armed = False
+        self._start_moving_label = ""
 
     @property
     def robot_config(self) -> RobotConfig:
@@ -178,6 +187,24 @@ class MotionController(Node, ABC):
         except Exception as e:
             self.get_logger().warn(f"EE orientation 조회 실패: {e}")
             return None
+
+    # ── /start_moving 이벤트 (arm-fire 패턴) ─────────────────
+
+    def arm_start_moving(self, label: str = ""):
+        """다음 motion 실행 시점에 /start_moving을 1회 발행하도록 arm.
+
+        service_runner가 task 시작 시 호출 → 첫 motion의 plan→execute 전환점에서
+        서브클래스가 fire_start_moving()을 호출하여 발행.
+        """
+        self._start_moving_label = label
+        self._start_moving_armed = True
+
+    def fire_start_moving(self):
+        """arm 상태면 /start_moving 발행 후 disarm. 서브클래스가 execute 직전 호출."""
+        if self._start_moving_armed:
+            self._start_moving_pub.publish(String(data=self._start_moving_label))
+            self.get_logger().info(f"[/start_moving] '{self._start_moving_label}' 발행 (motion 실행 시작)")
+            self._start_moving_armed = False
 
     @property
     def needs_orientation_correction(self) -> bool:

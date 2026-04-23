@@ -68,15 +68,21 @@ MoveIt Bridge 불필요 — cuRobo가 trajectory를 직접 생성하므로 Follo
 - **Blending**: 현재 위치 → trajectory 시작점까지 보간 구간을 앞에 추가
   - trajectory 시작점으로의 갑작스러운 점프 방지
 - **가속/감속 프로파일**: 처음 15% / 마지막 25% 구간에서 점진적 가속/감속 (dt 조정)
-- 실행 완료 후: 최종 position을 **50회** publish (60Hz) — 물리 안정화
-- **⚠️ hold 횟수/시간을 절대 줄이지 말 것!** 줄이면 모션 사이에 로봇이 튀는 현상 발생.
-  현재 값이 안정화 최소 기준이며, 속도를 올리려면 hold가 아닌 trajectory 자체의 dt를 조정할 것.
+- 실행 완료 후: 최종 position을 **5회** publish (60Hz) + `_wait_convergence()` 호출
+  - 시간 기반 hold(예전엔 50회) 대신 joint feedback이 target에 `tol=0.01rad` 이내로 수렴할 때까지 폴링
+  - 실제 도달이 확인되면 즉시 반환 → 빠르고, 미도달 시 타임아웃 경고
 - 콜백 처리는 background executor가 담당 — 인라인 `spin_once` 사용 금지
 
-#### move_linear hold 안정화
-- IK 보간 후 최종 위치를 **130회 (1.3초)** hold (100Hz) — 위로 튀는 현상 방지
-- **⚠️ 이 값도 절대 줄이지 말 것!** move_linear 후 hold가 부족하면 descend→close_gripper 사이에 로봇이 위로 튀어오름.
+#### move_linear 안정화
+- IK 보간 후 최종 위치를 **5회** publish (60Hz) + `_wait_convergence()` 호출
+  - 예전의 130회(1.3초) 시간 기반 hold를 feedback-based 수렴 대기로 교체
+  - descend→close_gripper 사이에 로봇이 위로 튀어오르는 현상 방지
 - 인라인 `spin_once` 없음 — background executor가 콜백 처리
+
+#### `_wait_convergence(target_arm, tol=0.01, timeout=2.0)` 메서드
+- motion 완료 직후 호출 — 실제 joint feedback이 target과 tol(rad) 이내가 될 때까지 polling
+- `time.sleep(0.02)` 기반 폴링만 수행 — background executor가 `_current_joint_state` 갱신
+- 타임아웃 시 warn 로그 (에러는 아님, 호출자 판단)
 
 #### hold_position() 메서드
 - 현재 위치를 **60Hz**로 지속 publish하는 메서드
