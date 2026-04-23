@@ -4,6 +4,10 @@
 **/*.so
 **/*.log*
 
+# colcon build artifacts (ROS2 workspaces)
+**/ws/install/
+**/ws/log/
+
 # Omniverse
 **/*.dmp
 **/.thumbs
