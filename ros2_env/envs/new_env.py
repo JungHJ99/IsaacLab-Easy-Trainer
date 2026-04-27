@@ -40,7 +40,7 @@ class NewEnv(BaseEnv):
         self.add_mimic_joint("joint8", "joint7", multiplier=-1.0)
 
         # ── 오브젝트 ──
-        self.add_object(name='RedCube', size=0.05, color=(0.800000011920929, 0.0, 0.0), shape='cube', scale=1.0, position=(0.3, 0.0, 0.052), orientation=(0.0, 0.0, 0.0), position_delta=(0.1, 0.3499999940395355, 0.0), orientation_delta=(0.0, 0.0, 45.0), friction=3.0, mass=0.02)
+        self.add_object(name='RedCube', size=0.05, color=(0.800000011920929, 0.0, 0.0), shape='cube', scale=1.0, position=(0.3, 0.0, 0.052), position_delta=(0.1, 0.3499999940395355, 0.0), orientation_delta=(0.0, 0.0, 0.0), friction=3.0, mass=0.02)
         self.add_object(name='WhitePlate', size=0.20000000298023224, color=(0.8, 0.8, 0.8), shape='cylinder', height=0.0010000000474974513, scale=1.0, position=(0.3, -1.4776690022699768e-06, 0.05699978023767471), position_delta=(0.1, 0.3499999940395355, 0.0), friction=3.0, mass=0.02)
 
         # ── 카메라 ──

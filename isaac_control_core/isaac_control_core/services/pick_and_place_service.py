@@ -59,6 +59,6 @@ def run(controller_class, args=None, **controller_kwargs):
         service_label="Pick-and-Place",
         pick_object=pick_object,
         place_target=place_target,
-        task_kwargs={"grasp_yaw": -180},
+        task_kwargs={"grasp_yaw": 0},
         timeout=120.0,
     )
